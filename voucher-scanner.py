@@ -12,6 +12,11 @@ Usage:
   3. Code scans the frozen image
   4. Click shop buttons to fill forms
   5. Click "New Scan" to take another picture
+
+  TODO:
+  - set number of digits per shop
+  - try freifunk which is closer to cam
+  - bugfix, sometimes I have to press picture button several times
 """
 
 import os, time
@@ -31,7 +36,7 @@ from PIL import Image, ImageTk
 
 
 # ---- Camera configuration ------------------------------------------------
-IP_x = "192.168.1.184"  # "192.168.178.46"
+IP_x = "192.168.178.46"  # "192.168.1.184"
 CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", f"https://{IP_x}:8080/video")
 
 RES_PHONE_WIDTH = 1280
@@ -137,10 +142,21 @@ def zbar_symbols(names):
     return out
 
 
-LINEAR_SYMBOL_NAMES = ["EAN13", "EAN8", "UPCA", "UPCE", "CODE128", "CODE39", "I25"]
-
-SYMBOLS = zbar_symbols(LINEAR_SYMBOL_NAMES + ["QRCODE"])
-
+LINEAR_SYMBOL_NAMES = [
+    "EAN13",
+    "EAN8",
+    "UPCA",
+    "UPCE",
+    "CODE128",
+    "CODE39",
+    "CODE93",
+    "I25",  # Interleaved 2 of 5
+    "CODABAR",
+    "CODE32",  # Italian Pharmacode
+    "DATABAR",
+    "DATABAR_EXP",
+]
+SYMBOLS = zbar_symbols(LINEAR_SYMBOL_NAMES + ["QRCODE", "PDF417"])
 
 # ---- Shop configurations -------------------------------------------------
 SHOPS = {
@@ -527,7 +543,7 @@ class VoucherScannerApp:
         self.root.after(30, self.update_live_video)
 
     # ==================== Scanning Methods ====================
-    def _scan_1d(self, bgr):
+    def _scan_1d_old(self, bgr):
         import cv2, numpy as np
         from pyzbar.pyzbar import decode
         import pytesseract
@@ -562,6 +578,137 @@ class VoucherScannerApp:
 
         if barcode_result:
             return {"card": barcode_result, "pin": None}
+
+        # -----------------------
+        # 2) OCR fallback for multi-line numeric ID
+        # -----------------------
+        h, w = gray.shape
+        # Large crop because number layouts vary
+        roi = gray[int(0.30 * h) : int(0.98 * h), int(0.03 * w) : int(0.97 * w)]
+
+        # --- candidates for iterative OCR ---
+        transforms = [
+            lambda x: x,
+            lambda x: cv2.bilateralFilter(x, 9, 40, 40),
+            lambda x: cv2.GaussianBlur(x, (5, 5), 0),
+            lambda x: cv2.adaptiveThreshold(
+                x, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 35, 10
+            ),
+            lambda x: cv2.adaptiveThreshold(
+                x, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 41, 8
+            ),
+            lambda x: cv2.threshold(x, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
+            lambda x: cv2.medianBlur(x, 3),
+            lambda x: cv2.resize(
+                x, None, fx=2.2, fy=2.2, interpolation=cv2.INTER_CUBIC
+            ),
+        ]
+
+        def run_ocr(img):
+            txt = pytesseract.image_to_string(
+                img, config="--psm 6 --oem 3 -c tessedit_char_whitelist=0123456789"
+            )
+            lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+            nums = ["".join(ch for ch in ln if ch.isdigit()) for ln in lines]
+            nums = [n for n in nums if MIN_OCR_DIGITS <= len(n) <= MAX_OCR_DIGITS]
+            if nums:
+                return max(nums, key=len)
+            return None
+
+        # Try sequential transforms until one produces a valid ID
+        best = None
+        img = roi.copy()
+        for t in transforms:
+            try:
+                mod = t(img)
+                if mod.ndim == 3:
+                    mod = cv2.cvtColor(mod, cv2.COLOR_BGR2GRAY)
+                n = run_ocr(mod)
+                if n:
+                    best = n
+                    break
+            except:
+                continue
+
+        if best:
+            poly = [(0, 0), (w, 0), (w, h), (0, h)]
+            return {"card": (best, "OCR", poly), "pin": None}
+
+        return {"card": None, "pin": None}
+
+    def _scan_1d(self, bgr):
+        import cv2, numpy as np
+        from pyzbar.pyzbar import decode
+        import pytesseract
+
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+        # -----------------------
+        # 1) BARCODE first - Build preprocessing candidates
+        # -----------------------
+        clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP, tileGridSize=CLAHE_TILE)
+        enhanced = clahe.apply(gray)
+        blurred = cv2.GaussianBlur(enhanced, (0, 0), UNSHARP_SIGMA)
+        sharp = cv2.addWeighted(
+            enhanced, 1.0 + UNSHARP_AMOUNT, blurred, -UNSHARP_AMOUNT, 0
+        )
+
+        kx = max(3, MORPH_KERNEL_W | 1)
+        ky = max(1, MORPH_KERNEL_H | 1)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kx, ky))
+        closed = cv2.morphologyEx(sharp, cv2.MORPH_CLOSE, kernel, iterations=MORPH_ITER)
+
+        # Build candidate list
+        candidates = []
+        candidates.append(("gray", gray))
+        candidates.append(("sharp", sharp))
+        candidates.append(("closed", closed))
+        candidates.append(("enhanced", enhanced))
+
+        # Binary thresholding variants
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        candidates.append(("binary", binary))
+
+        _, inv_binary = cv2.threshold(
+            gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+        )
+        candidates.append(("inv_binary", inv_binary))
+
+        adaptive = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+        )
+        candidates.append(("adaptive", adaptive))
+
+        # FIRST PASS: Try all candidates normally
+        for name, img in candidates:
+            results = decode(img, symbols=SYMBOLS)
+            if results:
+                r = results[0]
+                txt = r.data.decode("utf-8", errors="replace").strip()
+                poly = [(p.x, p.y) for p in getattr(r, "polygon", [])] or []
+                return {"card": (txt, r.type, poly), "pin": None}
+
+        # SECOND PASS: Try scaling on best candidates
+        best_for_scaling = ["binary", "sharp", "closed"]
+        for name, img in candidates:
+            if name in best_for_scaling:
+                results = self._try_multiple_scales(img)
+                if results:
+                    r = results[0]
+                    txt = r.data.decode("utf-8", errors="replace").strip()
+                    poly = [(p.x, p.y) for p in getattr(r, "polygon", [])] or []
+                    return {"card": (txt, r.type, poly), "pin": None}
+
+        # THIRD PASS: Try rotation on binary variants
+        best_for_rotation = ["binary", "inv_binary"]
+        for name, img in candidates:
+            if name in best_for_rotation:
+                results = self._try_rotations(img)
+                if results:
+                    r = results[0]
+                    txt = r.data.decode("utf-8", errors="replace").strip()
+                    poly = [(p.x, p.y) for p in getattr(r, "polygon", [])] or []
+                    return {"card": (txt, r.type, poly), "pin": None}
 
         # -----------------------
         # 2) OCR fallback for multi-line numeric ID
