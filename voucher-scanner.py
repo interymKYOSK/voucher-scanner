@@ -40,12 +40,12 @@ load_dotenv()
 
 # ---- Camera configuration ------------------------------------------------
 IP_phone = os.getenv("IP_PHONE")
-# IP_phone = "10.60.142.22"
+# IP_phone = "192.168.178.46"
 
 CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", f"https://{IP_phone}:8080/video")
 
-RES_PHONE_WIDTH = 1280
-RES_PHONE_HEIGHT = 720
+RES_PHONE_WIDTH = 720
+RES_PHONE_HEIGHT = 480
 
 
 def create_capture(source: str) -> cv2.VideoCapture:
@@ -185,8 +185,8 @@ SHOPS = {
         "emoji": "🥫",
     },
     "LIDL": {
-        "url": "https://www.lidl.at/c/geschenkkarte-guthabenabfrage/s10012116",
-        "iframe_selector": "#gift-card-balance-check-iframe",
+        "url": "https://www.lidl.de/c/lidl-geschenkkarten/s10007775",
+        "iframe_selector": 'iframe[src*="balance.php?cid=79"]',
         "card_selector": ".cardnumberfield",
         "pin_selector": ".pin",
         "emoji": "🍍",
