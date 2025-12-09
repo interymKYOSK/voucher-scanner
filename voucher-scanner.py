@@ -40,7 +40,6 @@ load_dotenv()
 
 # ---- Camera configuration ------------------------------------------------
 IP_phone = os.getenv("IP_PHONE")
-# IP_phone = "192.168.178.46"
 
 CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", f"https://{IP_phone}:8080/video")
 
@@ -239,7 +238,7 @@ class VoucherScannerApp:
         self.camera_source = camera_source  # Store for reconnection
         root.title("Voucher Scanner - Picture Mode")
         geometry_width = round(RES_PHONE_WIDTH + RES_PHONE_WIDTH * 0.1)
-        geometry_height = round(RES_PHONE_HEIGHT + RES_PHONE_HEIGHT * 0.3)
+        geometry_height = round(RES_PHONE_HEIGHT + RES_PHONE_HEIGHT)
         root.geometry(f"{geometry_width}x{geometry_height}")
 
         # Camera setup
@@ -486,8 +485,10 @@ class VoucherScannerApp:
                     return (True, corrected, n)
                 return (False, ds, n)
             if shop == "EDEKA":
-                return (n == 16, ds, n)
-            # default: accept if between min/max
+                if n == 32:
+                    corrected = ds[11:16] + ds[18:]
+                    return (True, corrected, n)
+                return (n == 19, ds, n)
             return (MIN_OCR_DIGITS <= n <= MAX_OCR_DIGITS, ds, n)
 
         ok, corrected_code, count = _validate_for(self.selected_shop, digits)
