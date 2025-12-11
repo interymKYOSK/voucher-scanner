@@ -13,10 +13,6 @@ Usage:
   4. Click shop buttons to fill forms
   5. Click "New Scan" to take another picture
 
-  TODO:
-  - set number of digits per shop
-  - try freifunk which is closer to cam
-  - bugfix, sometimes I have to press picture button several times
 """
 
 import os, time
@@ -209,6 +205,19 @@ try:
 except Exception:
     SELENIUM_AVAILABLE = False
 
+import random
+from selenium.webdriver.common.action_chains import ActionChains
+
+# Try to import undetected-chromedriver
+UNDETECTED_CHROME_AVAILABLE = False
+try:
+    import undetected_chromedriver as uc
+
+    UNDETECTED_CHROME_AVAILABLE = True
+except Exception:
+    print(
+        "WARNING: undetected-chromedriver not available. Install with: pip install undetected-chromedriver"
+    )
 
 # ---- Tuning parameters ---------------------------------------------------
 MIN_OCR_DIGITS = 10
@@ -229,6 +238,55 @@ OVERLAY_COLOR = (0, 200, 255)  # BGR
 BOX_COLOR = (0, 220, 0)
 TEXT_COLOR = (20, 20, 20)
 SUCCESS_COLOR = (0, 220, 0)
+
+
+def human_typing(element, text):
+    """Type with random delays between keystrokes to mimic human behavior."""
+    for char in text:
+        element.send_keys(char)
+        time.sleep(random.uniform(0.05, 0.1))
+
+
+def human_move_and_click(driver, element):
+    """Move mouse naturally before clicking."""
+    actions = ActionChains(driver)
+    actions.move_to_element(element).pause(random.uniform(0.3, 0.8)).click().perform()
+
+
+def simulate_human_behavior(driver):
+    """Simulate human browsing before filling form."""
+    try:
+        # Random scroll
+        scroll_amount = random.randint(100, 500)
+        driver.execute_script(f"window.scrollTo(0, {scroll_amount})")
+        time.sleep(random.uniform(0.5, 1))
+
+        # Move mouse randomly
+        actions = ActionChains(driver)
+        for _ in range(random.randint(2, 4)):
+            x_offset = random.randint(-200, 200)
+            y_offset = random.randint(-200, 200)
+            try:
+                actions.move_by_offset(x_offset, y_offset).perform()
+            except Exception:
+                pass
+            time.sleep(random.uniform(0.1, 0.5))
+    except Exception:
+        pass
+
+
+def wait_for_captcha(driver, timeout=180):
+    """Wait for invisible CAPTCHA to resolve."""
+    try:
+        wait = WebDriverWait(driver, timeout)
+        # Wait for common CAPTCHA iframes to disappear
+        wait.until_not(
+            EC.presence_of_element_located(
+                (By.CSS_SELECTOR, "iframe[src*='recaptcha'], iframe[src*='captcha']")
+            )
+        )
+    except Exception:
+        pass  # Timeout or no CAPTCHA present
 
 
 class VoucherScannerApp:
@@ -1154,7 +1212,7 @@ class VoucherScannerApp:
         self.root.after(0, _apply)
 
     def _ensure_driver(self):
-        """Create/reuse WebDriver and open all shop tabs."""
+        """Create/reuse WebDriver with anti-detection measures."""
         if not SELENIUM_AVAILABLE:
             raise RuntimeError("Selenium not installed")
 
@@ -1165,19 +1223,69 @@ class VoucherScannerApp:
             except Exception:
                 self._driver = None
 
-        # Try Chrome
-        try:
-            chrome_opts = webdriver.ChromeOptions()
-            chrome_opts.add_argument("--start-maximized")
-            self._driver = webdriver.Chrome(options=chrome_opts)
-        except Exception:
-            pass
+        # Try undetected-chromedriver first (best anti-detection)
+        if UNDETECTED_CHROME_AVAILABLE:
+            try:
+                options = uc.ChromeOptions()
+                options.add_argument("--disable-blink-features=AutomationControlled")
+                options.add_argument("--start-maximized")
+                self._driver = uc.Chrome(options=options, version_main=None)
+                self._status_async(
+                    "✅ Started undetected Chrome (anti-detection enabled)", "green"
+                )
+            except Exception as e:
+                print(f"Undetected Chrome failed: {e}")
+                self._driver = None
+
+        # Fallback to regular Chrome with stealth config
+        if self._driver is None:
+            try:
+                chrome_opts = webdriver.ChromeOptions()
+
+                # Remove automation flags
+                chrome_opts.add_experimental_option(
+                    "excludeSwitches", ["enable-automation"]
+                )
+                chrome_opts.add_experimental_option("useAutomationExtension", False)
+                chrome_opts.add_argument(
+                    "--disable-blink-features=AutomationControlled"
+                )
+
+                # Mimic real user
+                chrome_opts.add_argument("--start-maximized")
+                chrome_opts.add_argument("--disable-dev-shm-usage")
+                chrome_opts.add_argument("--no-sandbox")
+                chrome_opts.add_argument(
+                    "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+
+                self._driver = webdriver.Chrome(options=chrome_opts)
+
+                # Remove webdriver property
+                self._driver.execute_cdp_cmd(
+                    "Network.setUserAgentOverride",
+                    {
+                        "userAgent": self._driver.execute_script(
+                            "return navigator.userAgent"
+                        ).replace("Headless", "")
+                    },
+                )
+                self._driver.execute_script(
+                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+                )
+
+                self._status_async("✅ Started Chrome with stealth config", "green")
+            except Exception:
+                pass
 
         # Try Firefox
         if self._driver is None:
             try:
                 firefox_opts = webdriver.FirefoxOptions()
+                firefox_opts.set_preference("dom.webdriver.enabled", False)
+                firefox_opts.set_preference("useAutomationExtension", False)
                 self._driver = webdriver.Firefox(options=firefox_opts)
+                self._status_async("✅ Started Firefox", "green")
             except Exception:
                 pass
 
@@ -1185,6 +1293,7 @@ class VoucherScannerApp:
         if self._driver is None:
             try:
                 self._driver = webdriver.Safari()
+                self._status_async("✅ Started Safari", "green")
             except Exception as e:
                 raise RuntimeError("Could not start any browser") from e
 
@@ -1192,7 +1301,6 @@ class VoucherScannerApp:
         if self._driver is not None:
             self._open_all_shop_tabs()
             try:
-                # mark start browser button as active
                 self.start_browser_btn.config(style="Selected.TButton")
             except Exception:
                 pass
@@ -1257,7 +1365,7 @@ class VoucherScannerApp:
         site_name,
         iframe_selector=None,
     ):
-        """Fill form in existing tab."""
+        """Fill form with anti-detection measures."""
 
         def worker():
             driver = None
@@ -1282,47 +1390,106 @@ class VoucherScannerApp:
                     driver.get(url)
                     self._shop_windows[site_name] = driver.current_window_handle
 
+                # Simulate human behavior before interacting
+                time.sleep(random.uniform(1.5, 3))
+                simulate_human_behavior(driver)
+
+                # Wait for potential CAPTCHA (but don't block if none present)
+                try:
+                    wait_for_captcha(driver, timeout=10)
+                except Exception:
+                    pass
+
                 wait = WebDriverWait(driver, 30)
 
                 # Switch to iframe if needed
                 if iframe_selector:
-                    iframe = wait.until(
-                        EC.presence_of_element_located(
-                            (By.CSS_SELECTOR, iframe_selector)
+                    try:
+                        iframe = wait.until(
+                            EC.presence_of_element_located(
+                                (By.CSS_SELECTOR, iframe_selector)
+                            )
                         )
-                    )
-                    driver.switch_to.frame(iframe)
+                        driver.switch_to.frame(iframe)
+                        switched_to_iframe = True
+                        time.sleep(random.uniform(0.5, 1))
+                    except Exception as e:
+                        self._status_async(
+                            f"⚠️ Could not switch to iframe: {e}", "orange"
+                        )
 
-                # Fill card number
-                field_card = wait.until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, card_selector))
-                )
+                # Fill card number with human-like typing
                 try:
-                    field_card.clear()
-                except Exception:
-                    pass
-                field_card.send_keys(code_text)
+                    field_card = wait.until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, card_selector))
+                    )
+
+                    # Scroll element into view
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView(true);", field_card
+                    )
+                    time.sleep(random.uniform(0.3, 0.6))
+
+                    # Human-like interaction
+                    human_move_and_click(driver, field_card)
+                    time.sleep(random.uniform(0.2, 0.5))
+
+                    try:
+                        field_card.clear()
+                    except Exception:
+                        pass
+
+                    time.sleep(random.uniform(0.1, 0.3))
+                    human_typing(field_card, code_text)
+
+                    self._status_async(f"✓ Filled card number for {site_name}", "blue")
+
+                except Exception as e:
+                    self._status_async(f"❌ Could not fill card field: {e}", "red")
+                    raise
 
                 # Fill PIN if available
                 if pin_selector and pin_text:
-                    field_pin = wait.until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, pin_selector))
-                    )
                     try:
-                        field_pin.clear()
-                    except Exception:
-                        pass
-                    field_pin.send_keys(pin_text)
+                        time.sleep(random.uniform(0.5, 1.2))
+
+                        field_pin = wait.until(
+                            EC.presence_of_element_located(
+                                (By.CSS_SELECTOR, pin_selector)
+                            )
+                        )
+
+                        # Scroll into view
+                        driver.execute_script(
+                            "arguments[0].scrollIntoView(true);", field_pin
+                        )
+                        time.sleep(random.uniform(0.2, 0.5))
+
+                        human_move_and_click(driver, field_pin)
+                        time.sleep(random.uniform(0.2, 0.5))
+
+                        try:
+                            field_pin.clear()
+                        except Exception:
+                            pass
+
+                        time.sleep(random.uniform(0.1, 0.3))
+                        human_typing(field_pin, pin_text)
+
+                        self._status_async(f"✓ Filled PIN for {site_name}", "blue")
+
+                    except Exception as e:
+                        self._status_async(f"⚠️ Could not fill PIN field: {e}", "orange")
 
                 self._status_async(f"✅ Filled {site_name} form", "green")
 
-                if iframe_selector:
-                    driver.switch_to.default_content()
             except Exception as e:
                 self._status_async(f"❌ Error with {site_name}: {e}", "red")
+                import traceback
+
+                print(traceback.format_exc())
 
             finally:
-                # --- NEW: Robustly switch back ---
                 if switched_to_iframe and driver:
                     try:
                         driver.switch_to.default_content()
