@@ -1,0 +1,25 @@
+# Core dependencies
+opencv-python==4.8.1.78
+numpy==1.24.3
+Pillow==10.1.0
+
+# Barcode/QR code detection
+pyzbar==0.1.9
+
+# OCR (optional but recommended)
+pytesseract==0.3.10
+
+# Browser automation
+selenium==4.15.2
+
+# Anti-detection for Selenium (optional but recommended)
+undetected-chromedriver==3.5.4
+
+# Configuration management
+python-dotenv==1.0.0
+
+# GUI (usually comes with Python, but listed for completeness)
+# tkinter - comes pre-installed with most Python distributions
+
+# Additional useful packages
+webdriver-manager==4.0.1  # Auto-download browser drivers if needed

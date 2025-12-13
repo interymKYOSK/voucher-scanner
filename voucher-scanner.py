@@ -35,12 +35,29 @@ import os
 load_dotenv()
 
 # ---- Camera configuration ------------------------------------------------
-IP_phone = os.getenv("IP_PHONE")
+LAPTOP_CAM = (
+    os.getenv("LAPTOP_CAM", "False").lower() == "true"
+)  # Convert string to boolean
+IP_phone = os.getenv("IP_PHONE", "192.168.178.46")
 
-CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", f"https://{IP_phone}:8080/video")
+OCR_SWITCH = False
 
-RES_PHONE_WIDTH = 720
-RES_PHONE_HEIGHT = 480
+MAC = False  # Set to True if running on macOS, False for Linux
+if platform.system() == "Darwin":  # macOS
+    MAC = True
+
+if LAPTOP_CAM:
+    CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", "0")
+    RES_PHONE_WIDTH = 640
+    RES_PHONE_HEIGHT = 480
+else:
+    RES_PHONE_WIDTH = 640
+    RES_PHONE_HEIGHT = 480
+    if IP_phone:
+        CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", f"http://{IP_phone}:8080/video")
+    else:
+        print("ERROR: IP_PHONE environment variable not set. Set it in your .env file.")
+        sys.exit(1)
 
 
 def create_capture(source: str) -> cv2.VideoCapture:
@@ -120,13 +137,14 @@ except Exception as e:
 
 
 # ---- Optional OCR backend ------------------------------------------------
-try:
-    import pytesseract
+if OCR_SWITCH:
+    try:
+        import pytesseract
 
-    TESSERACT_AVAILABLE = True
-except Exception:
-    TESSERACT_AVAILABLE = False
-    print("WARNING: pytesseract not available, OCR fallback disabled.")
+        TESSERACT_AVAILABLE = True
+    except Exception:
+        OCR_SWITCH = False
+        print("WARNING: pytesseract not available, OCR fallback disabled.")
 
 
 def zbar_symbols(names):
@@ -237,6 +255,8 @@ UNSHARP_SIGMA = 1.0
 MORPH_KERNEL_W = 21
 MORPH_KERNEL_H = 3
 MORPH_ITER = 1
+SCAN_EVERY_MS = 150  # scanning cadence (ms)
+STABLE_THRESHOLD = 3  # consecutive frames to be "sure" (2 = one confirmation scan)
 DRAW_DASH_GAP = 14
 CORNER_LEN = 26
 OVERLAY_COLOR = (0, 200, 255)  # BGR
@@ -324,7 +344,8 @@ class VoucherScannerApp:
     def __init__(self, root: tk.Tk, camera_source: str = CAMERA_SOURCE):
         self.root = root
         self.camera_source = camera_source  # Store for reconnection
-        root.title("Voucher Scanner - Picture Mode")
+        mode_str = "Live Auto-Scan" if LAPTOP_CAM else "Picture Mode"
+        root.title(f"Voucher Scanner - {mode_str}")
         geometry_width = round(RES_PHONE_WIDTH + RES_PHONE_WIDTH * 0.1)
         geometry_height = round(RES_PHONE_HEIGHT + RES_PHONE_HEIGHT)
         root.geometry(f"{geometry_width}x{geometry_height}")
@@ -361,9 +382,39 @@ class VoucherScannerApp:
         except Exception:
             pass
 
+        # Create scrollable canvas for controls
+        canvas = tk.Canvas(root, bg="white", highlightthickness=0)
+        canvas.grid(row=2, column=0, columnspan=7, sticky="nsew", padx=5, pady=5)
+
+        scrollbar = ttk.Scrollbar(root, orient="vertical", command=canvas.yview)
+        scrollbar.grid(row=2, column=7, sticky="ns", padx=(0, 5), pady=5)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        # Create main frame inside canvas
+        main_frame = ttk.Frame(canvas)
+        canvas.create_window((0, 0), window=main_frame, anchor="nw")
+
+        # Bind mousewheel for scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Update scroll region
+        def _on_frame_configure(event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        main_frame.bind("<Configure>", _on_frame_configure)
+
+        # Configure grid weight for scrollable area
+        root.grid_rowconfigure(2, weight=1)
+
+        # Store for later access
+        self.main_frame = main_frame
+
         # Controls frame
-        controls_frame = ttk.LabelFrame(root, text="")
-        controls_frame.grid(row=2, column=0, columnspan=4, sticky="w", padx=12, pady=5)
+        controls_frame = ttk.LabelFrame(main_frame, text="")
+        controls_frame.grid(row=0, column=0, columnspan=4, sticky="w", padx=12, pady=5)
 
         ttk.Label(controls_frame, text="Card Number:").pack(side="left")
         self.code = tk.StringVar()
@@ -378,56 +429,70 @@ class VoucherScannerApp:
             side="left", padx=(2, 12)
         )
 
-        # Start browser hint + button (new row above shops)
+        # Start browser hint + button (shown in both LAPTOP_CAM and picture mode)
         start_hint = ttk.Label(
-            root, text="Start browser first (open shop tabs if needed)"
+            main_frame, text="Start browser first (open shop tabs if needed)"
         )
-        start_hint.grid(row=3, column=0, columnspan=4, sticky="w", padx=12, pady=(8, 0))
+        start_hint.grid(row=1, column=0, columnspan=4, sticky="w", padx=12, pady=(8, 0))
 
-        start_frame = ttk.Frame(root)
+        start_frame = ttk.Frame(main_frame)
         start_frame.grid(
-            row=4, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 6)
+            row=2, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 6)
         )
 
-        # Take picture row (take picture button alone)
+        # Take picture row - shown in picture mode (LAPTOP_CAM=False) and live mode (LAPTOP_CAM=True)
         take_hint = ttk.Label(
-            root, text="Take picture (shop auto-selected except ALDI/LIDL)"
+            main_frame, text="Take picture to freeze frame for scanning"
         )
-        take_hint.grid(row=5, column=0, columnspan=4, sticky="w", padx=12, pady=(4, 0))
+        take_hint.grid(row=3, column=0, columnspan=4, sticky="w", padx=12, pady=(4, 0))
+        if LAPTOP_CAM:
+            take_hint.config(text="Take picture to restart detection")
 
-        take_frame = ttk.Frame(root)
-        take_frame.grid(row=6, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 6))
+        take_frame = ttk.Frame(main_frame)
+        take_frame.grid(row=4, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 6))
 
-        # Shop buttons hint (will be placed below start browser)
+        # Shop buttons hint
         shop_hint = ttk.Label(
-            root, text="Then choose the Shop (choose ALDI or LIDL if ambiguous)"
+            main_frame, text="Choose the Shop (choose ALDI or LIDL if ambiguous)"
         )
-        shop_hint.grid(row=7, column=0, columnspan=4, sticky="w", padx=12, pady=(6, 0))
+        shop_hint.grid(row=5, column=0, columnspan=4, sticky="w", padx=12, pady=(6, 0))
 
-        # Shop buttons frame (placed below start browser)
-        shop_frame = ttk.LabelFrame(root, text="")
-        shop_frame.grid(row=8, column=0, columnspan=4, sticky="w", padx=12, pady=5)
+        # Detected shop status label
+        self.detected_shop_label = ttk.Label(
+            main_frame, text="", foreground="green", font=("Helvetica", 12, "bold")
+        )
+        self.detected_shop_label.grid(
+            row=5, column=0, columnspan=4, sticky="w", padx=12, pady=(22, 2)
+        )
+
+        # Shop buttons frame
+        shop_frame = ttk.LabelFrame(main_frame, text="")
+        shop_frame.grid(row=6, column=0, columnspan=4, sticky="w", padx=12, pady=5)
 
         # Action area hint
         action_hint = ttk.Label(
-            root, text="After scan: press 'Fill Selected' to fill the selected shop"
+            main_frame,
+            text="After scan: press 'Fill Selected' to fill the selected shop",
         )
         action_hint.grid(
-            row=9, column=0, columnspan=4, sticky="w", padx=12, pady=(6, 0)
+            row=7, column=0, columnspan=4, sticky="w", padx=12, pady=(6, 0)
         )
 
-        # Action buttons frame (below shop buttons)
-        action_frame = ttk.LabelFrame(root, text="")
-        action_frame.grid(row=10, column=0, columnspan=4, sticky="w", padx=12, pady=5)
+        # Action buttons frame
+        action_frame = ttk.LabelFrame(main_frame, text="")
+        action_frame.grid(row=8, column=0, columnspan=4, sticky="w", padx=12, pady=5)
 
         # Style for selected/pressed buttons
+        # Use tk.Button on macOS, ttk.Button on Linux
         self._style = ttk.Style()
-        try:
-            self._style.configure("Selected.TButton", background="#b7ebc6")
-            self._style.configure("Pressed.TButton", background="#d6f0ff")
-            self._style.configure("Ambiguous.TButton", background="#ffd59e")
-        except Exception:
-            pass
+        self._use_tk_buttons = MAC  # Use the MAC flag instead of platform detection
+        if not self._use_tk_buttons:
+            try:
+                self._style.configure("Selected.TButton", background="#b7ebc6")
+                self._style.configure("Pressed.TButton", background="#d6f0ff")
+                self._style.configure("Ambiguous.TButton", background="#ffd59e")
+            except Exception:
+                pass
 
         # Action buttons (order will be added to action_frame; start button lives in start_frame)
         self.start_browser_btn = ttk.Button(
@@ -441,16 +506,31 @@ class VoucherScannerApp:
         )
         self.start_browser_btn.pack(side="left", padx=2)
 
-        self.take_picture_btn = ttk.Button(
-            take_frame,
-            text="Take Picture",
-            command=lambda: (
-                self._flash_button(self.take_picture_btn),
-                self._take_picture(),
-            ),
-            width=20,
-        )
-        self.take_picture_btn.pack(side="left", padx=2)
+        if not LAPTOP_CAM:
+            # Picture mode: show Take Picture button
+            self.take_picture_btn = ttk.Button(
+                take_frame,
+                text="Take Picture",
+                command=lambda: (
+                    self._flash_button(self.take_picture_btn),
+                    self._take_picture(),
+                ),
+                width=20,
+            )
+            self.take_picture_btn.pack(side="left", padx=2)
+        else:
+            # Live mode: Take Picture button restarts detection
+            self.take_picture_btn = ttk.Button(
+                take_frame,
+                text="Take Picture",
+                command=lambda: (
+                    self._flash_button(self.take_picture_btn),
+                    self.reset_scan(),
+                ),
+                width=20,
+            )
+            self.take_picture_btn.pack(side="left", padx=2)
+            self.take_picture_btn.state(["disabled"])
 
         self.fill_selected_btn = ttk.Button(
             action_frame,
@@ -475,26 +555,79 @@ class VoucherScannerApp:
         self.reset_camera_btn.pack(side="left", padx=2)
 
         self.shop_buttons = []
+        self.shop_button_frames = {}  # Store frames for styling
+
         for name, config in SHOPS.items():
             text = f"{name}"
-            btn = ttk.Button(shop_frame, text=text, width=12, style="TButton")
+            if self._use_tk_buttons:
+                # macOS: Use frame as background indicator + button inside
+                frame = tk.Frame(
+                    shop_frame,
+                    bg="#E8E8E8",  # Normal gray background
+                    relief="flat",
+                    highlightthickness=2,
+                    highlightbackground="#999999",
+                )
+                btn = tk.Button(
+                    frame,
+                    text=text,
+                    width=10,
+                    bg="#E8E8E8",
+                    fg="black",
+                    activebackground="#D0D0D0",
+                    relief="flat",
+                    bd=0,
+                    state="disabled",
+                    font=("Helvetica", 11, "normal"),
+                    padx=8,
+                    pady=4,
+                    highlightthickness=0,
+                )
+                btn.pack(padx=2, pady=2)
+                frame.pack(side="left", padx=2, pady=2)
+            else:
+                # Linux: Use ttk.Button
+                btn = ttk.Button(shop_frame, text=text, width=12, style="TButton")
+                btn.pack(side="left", padx=2)
+                btn.state(["disabled"])
+
             btn._orig_text = text
             btn._shop_name = name
+            btn._frame = frame if self._use_tk_buttons else None
             # Selecting a shop (does not open browser yet)
             btn.config(command=lambda n=name, b=btn: self._select_shop(n, b))
-            btn.pack(side="left", padx=2)
             self.shop_buttons.append(btn)
+            if self._use_tk_buttons:
+                self.shop_button_frames[name] = (frame, btn)
 
         # State
-        self.picture_mode = False
+        self.picture_mode = False  # Will be set to True only when actively frozen
         self.frozen_frame = None
         self.last_boxes = []
         self.last_label = ""
         self._driver = None
         self._shop_windows = {}
 
-        # Start live video
-        self.update_live_video()
+        # Live scanning state (for LAPTOP_CAM mode)
+        self._last_scan_t = 0.0
+        self._potential_code = ""
+        self._potential_code_type = ""
+        self._potential_code_count = 0
+        self._stable_code = ""
+        self._potential_pin = ""
+        self._potential_pin_count = 0
+        self._stable_pin = ""
+        self.STABLE_THRESHOLD = STABLE_THRESHOLD
+        self.scanning = True
+        self._code_locked = (
+            False  # True when code is detected and waiting for user action
+        )
+        self._frozen_frame = None  # Stores frozen frame when code is locked
+        self._lock_time = 0.0  # Time when code was locked
+        if LAPTOP_CAM:
+            self.update_frame()
+        else:
+            self.update_live_video()
 
     def _select_shop(self, name, button):
         """Mark a shop as selected. Visual toggle on the button."""
@@ -502,7 +635,7 @@ class VoucherScannerApp:
         try:
             prev = getattr(self, "selected_shop_button", None)
             if prev and prev is not button:
-                prev.config(style="TButton")
+                self._set_button_style(prev, "normal")
         except Exception:
             pass
 
@@ -512,11 +645,11 @@ class VoucherScannerApp:
             self.selected_shop = None
             try:
                 for b in self.shop_buttons:
-                    b.config(style="TButton")
+                    self._set_button_style(b, "normal")
             except Exception:
                 pass
             self.selected_shop_button = None
-            self.status.config(text="Shop deselected", foreground="blue")
+            self._safe_status("Shop deselected", "blue")
         else:
             # Select this shop and set style green; reset others to default
             self.selected_shop = name
@@ -525,21 +658,80 @@ class VoucherScannerApp:
                 for b in self.shop_buttons:
                     try:
                         if getattr(b, "_shop_name", None) == name:
-                            b.config(style="Selected.TButton")
+                            self._set_button_style(b, "selected")
                         else:
-                            b.config(style="TButton")
+                            self._set_button_style(b, "normal")
                     except Exception:
                         pass
             except Exception:
                 pass
-            self.status.config(text=f"Selected shop: {name}", foreground="blue")
+            self._safe_status(f"Selected shop: {name}", "blue")
+
+    def _set_button_style(self, button, style_type):
+        """Set button style: 'normal', 'selected', or 'ambiguous'."""
+        if self._use_tk_buttons:
+            # macOS: Style the frame around the button for visibility
+            frame = button._frame
+            if style_type == "selected":
+                # Green for selected
+                frame.config(
+                    bg="#00CC00",
+                    highlightbackground="#009900",
+                    highlightcolor="#009900",
+                )
+                button.config(bg="#00CC00", font=("Helvetica", 11, "bold"))
+            elif style_type == "ambiguous":
+                # Orange for ambiguous (needs manual choice)
+                frame.config(
+                    bg="#FF9900",
+                    highlightbackground="#CC6600",
+                    highlightcolor="#CC6600",
+                )
+                button.config(bg="#FF9900", font=("Helvetica", 11, "bold"))
+            else:  # normal
+                # Gray for normal/disabled
+                frame.config(
+                    bg="#E8E8E8",
+                    highlightbackground="#999999",
+                    highlightcolor="#999999",
+                )
+                button.config(bg="#E8E8E8", font=("Helvetica", 11, "normal"))
+        else:
+            # ttk styling for Linux/Windows
+            if style_type == "selected":
+                button.config(style="Selected.TButton")
+            elif style_type == "ambiguous":
+                button.config(style="Ambiguous.TButton")
+            else:
+                button.config(style="TButton")
+
+    def _enable_button(self, button):
+        """Enable a button (works for both tk.Button and ttk.Button)."""
+        if self._use_tk_buttons:
+            button.config(state="normal")
+        else:
+            button.state(["!disabled"])
+
+    def _disable_button(self, button):
+        """Disable a button (works for both tk.Button and ttk.Button)."""
+        if self._use_tk_buttons:
+            button.config(state="disabled")
+        else:
+            button.state(["disabled"])
 
     def _flash_button(self, button, ms: int = 300):
         """Temporarily apply Pressed style to a button then revert."""
         try:
-            orig_style = button.cget("style") if "style" in button.keys() else "TButton"
-            button.config(style="Pressed.TButton")
-            self.root.after(ms, lambda: button.config(style=orig_style))
+            if self._use_tk_buttons:
+                orig_bg = button.cget("bg")
+                button.config(bg="#d6f0ff")
+                self.root.after(ms, lambda: button.config(bg=orig_bg))
+            else:
+                orig_style = (
+                    button.cget("style") if "style" in button.keys() else "TButton"
+                )
+                button.config(style="Pressed.TButton")
+                self.root.after(ms, lambda: button.config(style=orig_style))
         except Exception:
             pass
 
@@ -621,45 +813,79 @@ class VoucherScannerApp:
 
     def _reset_camera(self):
         """Reset/reconnect the camera connection."""
-        self.status.config(text="🔌 Resetting camera...", foreground="orange")
-        self.root.update()
+        self._safe_status("🔌 Resetting camera...", "orange")
+        try:
+            self.root.update()
+        except Exception:
+            pass
 
         try:
             # Release current connection
-            if self.cap:
-                self.cap.release()
+            if hasattr(self, "cap") and self.cap:
+                try:
+                    self.cap.release()
+                except Exception as e:
+                    print(f"Warning: Could not release camera: {e}")
+
+            # Small delay before reconnecting
+            time.sleep(0.5)
 
             # Reconnect
             self.cap = create_capture(self.camera_source)
             if not self.cap.isOpened():
-                messagebox.showerror("Camera Error", "Could not reconnect to camera.")
-                self.status.config(text="❌ Camera connection failed", foreground="red")
+                try:
+                    messagebox.showerror(
+                        "Camera Error", "Could not reconnect to camera."
+                    )
+                except Exception:
+                    pass
+                self._safe_status("❌ Camera connection failed", "red")
                 return
 
             # Set camera properties again
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, RES_PHONE_WIDTH)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, RES_PHONE_HEIGHT)
-            self.cap.set(cv2.CAP_PROP_FPS, 20)
-            self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+            try:
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, RES_PHONE_WIDTH)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, RES_PHONE_HEIGHT)
+                self.cap.set(cv2.CAP_PROP_FPS, 20)
+                self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+            except Exception as e:
+                print(f"Warning: Could not set camera properties: {e}")
 
-            self.status.config(
-                text="✅ Camera reconnected - Ready to capture", foreground="green"
-            )
-            # Reset picture mode in case we were frozen
-            self.picture_mode = False
-            self.frozen_frame = None
+            self._safe_status("✅ Camera reconnected - Ready to capture", "green")
+
+            # For LAPTOP_CAM, also reset scanning state
+            if LAPTOP_CAM:
+                try:
+                    self.reset_scan()
+                except Exception as e:
+                    print(f"Warning: Could not reset scan: {e}")
+
+            # Enable Take Picture button if it exists
+            try:
+                if hasattr(self, "take_picture_btn") and self.take_picture_btn:
+                    self.take_picture_btn.state(["!disabled"])
+            except Exception:
+                pass
 
         except Exception as e:
-            messagebox.showerror("Camera Error", f"Failed to reset camera: {e}")
-            self.status.config(text="❌ Camera reset failed", foreground="red")
+            try:
+                messagebox.showerror("Camera Error", f"Failed to reset camera: {e}")
+            except Exception:
+                pass
+            self._safe_status("❌ Camera reset failed", "red")
 
     # ==================== Picture Capture Methods ====================
 
     def _take_picture(self):
         """Capture current frame and process it."""
-        ok, frame = self.cap.read()
-        if not ok:
-            self.status.config(text="❌ Failed to capture picture", foreground="red")
+        try:
+            ok, frame = self.cap.read()
+            if not ok:
+                self._safe_status("❌ Failed to capture picture", "red")
+                return
+        except Exception as e:
+            print(f"Error reading from camera: {e}")
+            self._safe_status("❌ Camera read error", "red")
             return
 
         # Store frozen frame
@@ -667,9 +893,13 @@ class VoucherScannerApp:
         self.picture_mode = True
 
         # Update button states
-        self.take_picture_btn.state(["disabled"])
+        try:
+            if hasattr(self, "take_picture_btn") and self.take_picture_btn:
+                self.take_picture_btn.state(["disabled"])
+        except Exception:
+            pass
 
-        self.status.config(text="⏳ Processing image...", foreground="orange")
+        self._safe_status("⏳ Processing image...", "orange")
 
         # Process the image asynchronously so the GUI remains responsive
         threading.Thread(target=self._process_frozen_frame, daemon=True).start()
@@ -690,12 +920,29 @@ class VoucherScannerApp:
         self.code.set("")
         self.pin.set("")
 
-        # Update button states
-        self.take_picture_btn.state(["!disabled"])
-        for btn in self.shop_buttons:
-            btn.state(["disabled"])
+        # Clear detected shop label
+        try:
+            self.detected_shop_label.config(text="", foreground="blue")
+        except Exception:
+            pass
 
-        self.status.config(text="📹 Live video - Ready to capture", foreground="blue")
+        # Update button states
+        try:
+            if (
+                hasattr(self, "take_picture_btn")
+                and self.take_picture_btn.winfo_exists()
+            ):
+                self.take_picture_btn.state(["!disabled"])
+        except Exception:
+            pass
+        for btn in self.shop_buttons:
+            try:
+                if hasattr(btn, "winfo_exists") and btn.winfo_exists():
+                    self._disable_button(btn)
+            except Exception:
+                pass
+
+        self._safe_status("📹 Live video - Ready to capture", "blue")
 
         # Resume live video
         self.update_live_video()
@@ -717,7 +964,7 @@ class VoucherScannerApp:
         except Exception:
             pass
 
-        self.status.config(text="📹 Live video - Ready to capture", foreground="blue")
+        self._safe_status("📹 Live video - Ready to capture", "blue")
         try:
             self.update_live_video()
         except Exception:
@@ -770,11 +1017,11 @@ class VoucherScannerApp:
             else:
                 self.last_label = txt
 
-            self.status.config(text=status_text, foreground="green")
+            self._safe_status(status_text, "green")
 
             # Enable shop buttons
             for btn in self.shop_buttons:
-                btn.state(["!disabled"])
+                self._enable_button(btn)
             # Auto-select shop when unambiguous (except ALDI/LIDL require manual choice)
             try:
                 # extract digits from code text
@@ -790,7 +1037,6 @@ class VoucherScannerApp:
                 elif n == 20 or n == 38:
                     # ALDI and LIDL both accept 20 (or 38 -> drop first 18)
                     candidates = ["ALDI", "LIDL"]
-
                 if len(candidates) == 1:
                     shop_to_select = candidates[0]
                     # set selection and style
@@ -799,42 +1045,64 @@ class VoucherScannerApp:
                     try:
                         prev = getattr(self, "selected_shop_button", None)
                         if prev and prev._shop_name != shop_to_select:
-                            prev.config(style="TButton")
+                            self._set_button_style(prev, "normal")
                     except Exception:
                         pass
                     for b in self.shop_buttons:
                         try:
                             if getattr(b, "_shop_name", None) == shop_to_select:
-                                b.config(style="Selected.TButton")
+                                self._set_button_style(b, "selected")
                                 self.selected_shop_button = b
                             else:
-                                b.config(style="TButton")
+                                self._set_button_style(b, "normal")
                         except Exception:
                             pass
                     self.status.config(
                         text=f"Auto-selected shop: {shop_to_select}", foreground="green"
                     )
+                    # Update detected shop label
+                    try:
+                        self.detected_shop_label.config(
+                            text=f"✅ Detected: {shop_to_select}", foreground="green"
+                        )
+                    except Exception:
+                        pass
                 elif len(candidates) > 1:
                     # ambiguous ALDI/LIDL - require manual choice
                     # mark both ALDI and LIDL buttons as ambiguous (orange)
                     try:
                         for b in self.shop_buttons:
                             if getattr(b, "_shop_name", None) in ("ALDI", "LIDL"):
-                                b.config(style="Ambiguous.TButton")
+                                self._set_button_style(b, "ambiguous")
                             else:
-                                b.config(style="TButton")
+                                self._set_button_style(b, "normal")
                     except Exception:
                         pass
                     self.status.config(
                         text=f"Ambiguous shop (ALDI/LIDL). Please choose.",
                         foreground="orange",
                     )
+                    # Update detected shop label
+                    try:
+                        self.detected_shop_label.config(
+                            text="⚠️ Ambiguous: ALDI or LIDL - Please choose",
+                            foreground="orange",
+                        )
+                    except Exception:
+                        pass
                 else:
                     # no match
                     self.status.config(
                         text=f"Detected {n} digits — no matching shop. Try again.",
                         foreground="red",
                     )
+                    # Update detected shop label
+                    try:
+                        self.detected_shop_label.config(
+                            text=f"❌ No shop found for {n} digits", foreground="red"
+                        )
+                    except Exception:
+                        pass
             except Exception:
                 pass
             beep()
@@ -1065,57 +1333,60 @@ class VoucherScannerApp:
         # -----------------------
         # 2) OCR fallback for multi-line numeric ID
         # -----------------------
-        h, w = gray.shape
-        # Large crop because number layouts vary
-        roi = gray[int(0.30 * h) : int(0.98 * h), int(0.03 * w) : int(0.97 * w)]
+        if OCR_SWITCH:
+            h, w = gray.shape
+            # Large crop because number layouts vary
+            roi = gray[int(0.30 * h) : int(0.98 * h), int(0.03 * w) : int(0.97 * w)]
 
-        # --- candidates for iterative OCR ---
-        transforms = [
-            lambda x: x,
-            lambda x: cv2.bilateralFilter(x, 9, 40, 40),
-            lambda x: cv2.GaussianBlur(x, (5, 5), 0),
-            lambda x: cv2.adaptiveThreshold(
-                x, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 35, 10
-            ),
-            lambda x: cv2.adaptiveThreshold(
-                x, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 41, 8
-            ),
-            lambda x: cv2.threshold(x, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
-            lambda x: cv2.medianBlur(x, 3),
-            lambda x: cv2.resize(
-                x, None, fx=2.2, fy=2.2, interpolation=cv2.INTER_CUBIC
-            ),
-        ]
+            # --- candidates for iterative OCR ---
+            transforms = [
+                lambda x: x,
+                lambda x: cv2.bilateralFilter(x, 9, 40, 40),
+                lambda x: cv2.GaussianBlur(x, (5, 5), 0),
+                lambda x: cv2.adaptiveThreshold(
+                    x, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 35, 10
+                ),
+                lambda x: cv2.adaptiveThreshold(
+                    x, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 41, 8
+                ),
+                lambda x: cv2.threshold(x, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[
+                    1
+                ],
+                lambda x: cv2.medianBlur(x, 3),
+                lambda x: cv2.resize(
+                    x, None, fx=2.2, fy=2.2, interpolation=cv2.INTER_CUBIC
+                ),
+            ]
 
-        def run_ocr(img):
-            txt = pytesseract.image_to_string(
-                img, config="--psm 6 --oem 3 -c tessedit_char_whitelist=0123456789"
-            )
-            lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
-            nums = ["".join(ch for ch in ln if ch.isdigit()) for ln in lines]
-            nums = [n for n in nums if MIN_OCR_DIGITS <= len(n) <= MAX_OCR_DIGITS]
-            if nums:
-                return max(nums, key=len)
-            return None
+            def run_ocr(img):
+                txt = pytesseract.image_to_string(
+                    img, config="--psm 6 --oem 3 -c tessedit_char_whitelist=0123456789"
+                )
+                lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
+                nums = ["".join(ch for ch in ln if ch.isdigit()) for ln in lines]
+                nums = [n for n in nums if MIN_OCR_DIGITS <= len(n) <= MAX_OCR_DIGITS]
+                if nums:
+                    return max(nums, key=len)
+                return None
 
-        # Try sequential transforms until one produces a valid ID
-        best = None
-        img = roi.copy()
-        for t in transforms:
-            try:
-                mod = t(img)
-                if mod.ndim == 3:
-                    mod = cv2.cvtColor(mod, cv2.COLOR_BGR2GRAY)
-                n = run_ocr(mod)
-                if n:
-                    best = n
-                    break
-            except:
-                continue
+            # Try sequential transforms until one produces a valid ID
+            best = None
+            img = roi.copy()
+            for t in transforms:
+                try:
+                    mod = t(img)
+                    if mod.ndim == 3:
+                        mod = cv2.cvtColor(mod, cv2.COLOR_BGR2GRAY)
+                    n = run_ocr(mod)
+                    if n:
+                        best = n
+                        break
+                except:
+                    continue
 
-        if best:
-            poly = [(0, 0), (w, 0), (w, h), (0, h)]
-            return {"card": (best, "OCR", poly), "pin": None}
+            if best:
+                poly = [(0, 0), (w, 0), (w, h), (0, h)]
+                return {"card": (best, "OCR", poly), "pin": None}
 
         return {"card": None, "pin": None}
 
@@ -1231,15 +1502,26 @@ class VoucherScannerApp:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _safe_status(self, text, color="blue"):
+        """Safely update status label with error handling."""
+        try:
+            if hasattr(self, "status") and self.status and self.status.winfo_exists():
+                txt = text if text is not None else ""
+                if len(txt) > 120:
+                    txt = txt[:117] + "..."
+                self.status.config(text=txt, foreground=color)
+        except Exception as e:
+            print(f"Warning: Could not update status: {e}")
+
     def _status_async(self, text, color="blue"):
         def _apply():
-            # keep status to a single concise line to avoid vertical layout shifts
-            txt = text if text is not None else ""
-            if len(txt) > 120:
-                txt = txt[:117] + "..."
-            self.status.config(text=txt, foreground=color)
+            self._safe_status(text, color)
 
-        self.root.after(0, _apply)
+        try:
+            if hasattr(self, "root") and self.root:
+                self.root.after(0, _apply)
+        except Exception as e:
+            print(f"Warning: Could not schedule status update: {e}")
 
     def _ensure_driver(self):
         """Create/reuse WebDriver with anti-detection measures."""
@@ -1252,76 +1534,92 @@ class VoucherScannerApp:
                 return self._driver
             except Exception:
                 self._driver = None
-        # Try Firefox
-        if self._driver is None:
-            try:
-                firefox_opts = webdriver.FirefoxOptions()
-                # Anti-detection: hide webdriver
-                firefox_opts.set_preference("dom.webdriver.enabled", False)
-                firefox_opts.set_preference("media.peerconnection.enabled", False)
-                firefox_opts.set_preference("privacy.trackingprotection.enabled", True)
 
-                # Reduce CPU usage: disable unnecessary features
-                firefox_opts.set_preference("browser.cache.disk.enable", False)
-                firefox_opts.set_preference("browser.sessionstore.max_tabs_undo", 0)
-                firefox_opts.set_preference("dom.max_script_run_time", 30)
-                firefox_opts.set_preference("dom.disable_beforeunload", True)
-                firefox_opts.set_preference("browser.tabs.drawInTitlebar", False)
+        # Try Firefox first
+        try:
+            firefox_opts = webdriver.FirefoxOptions()
+            # Anti-detection: hide webdriver
+            firefox_opts.set_preference("dom.webdriver.enabled", False)
+            firefox_opts.set_preference("media.peerconnection.enabled", False)
+            firefox_opts.set_preference("privacy.trackingprotection.enabled", True)
 
-                # Mimic real user agent
+            # Reduce CPU usage: disable unnecessary features
+            firefox_opts.set_preference("browser.cache.disk.enable", False)
+            firefox_opts.set_preference("browser.sessionstore.max_tabs_undo", 0)
+            firefox_opts.set_preference("dom.max_script_run_time", 30)
+            firefox_opts.set_preference("dom.disable_beforeunload", True)
+            firefox_opts.set_preference("browser.tabs.drawInTitlebar", False)
+
+            # Mimic real user agent
+            if MAC:
                 firefox_opts.set_preference(
                     "general.useragent.override",
-                    "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 )
-
-                # Disable WebGL and plugins that increase CPU load
-                firefox_opts.set_preference("webgl.disabled", True)
-                firefox_opts.set_preference("plugin.state.java", 0)
+            else:  # linux
                 firefox_opts.set_preference(
-                    "extensions.activeThemeID", "firefox-compact-light@mozilla.org"
+                    "general.useragent.override",
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 )
 
-                self._driver = webdriver.Firefox(options=firefox_opts)
+            # Disable WebGL and plugins that increase CPU load
+            firefox_opts.set_preference("webgl.disabled", True)
+            firefox_opts.set_preference("plugin.state.java", 0)
+            firefox_opts.set_preference(
+                "extensions.activeThemeID", "firefox-compact-light@mozilla.org"
+            )
 
-                # Execute stealth script to hide Selenium detection
-                self._driver.execute_script(
-                    """
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => undefined
-                    });
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => [1, 2, 3, 4, 5]
-                    });
+            self._driver = webdriver.Firefox(options=firefox_opts)
+
+            # Execute stealth script to hide Selenium detection
+            self._driver.execute_script(
                 """
-                )
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5]
+                });
+            """
+            )
 
+            self._status_async("✅ Started Firefox (anti-detection enabled)", "green")
+            print("[DEBUG] Firefox driver created with anti-detection measures")
+            # Open all shop tabs immediately after Firefox starts
+            self._open_all_shop_tabs()
+            try:
+                self.start_browser_btn.config(style="Selected.TButton")
+            except Exception:
+                pass
+            return self._driver
+        except Exception as e:
+            print(f"Firefox failed: {e}")
+            self._driver = None
+
+        # If Firefox failed, try Chrome fallbacks
+        # Try undetected-chromedriver first (best anti-detection)
+        if self._driver is None and UNDETECTED_CHROME_AVAILABLE:
+            try:
+                options = uc.ChromeOptions()
+                options.add_argument("--disable-blink-features=AutomationControlled")
+                options.add_argument("--start-maximized")
+                self._driver = uc.Chrome(options=options, version_main=None)
                 self._status_async(
-                    "✅ Started Firefox (anti-detection enabled)", "green"
+                    "✅ Started undetected Chrome (anti-detection enabled)", "green"
                 )
-                print("[DEBUG] Firefox driver created with anti-detection measures")
-                # DO NOT return here - let code fall through to open shop tabs below
-
+                print("[DEBUG] Undetected Chrome driver created")
+                self._open_all_shop_tabs()
+                try:
+                    self.start_browser_btn.config(style="Selected.TButton")
+                except Exception:
+                    pass
+                return self._driver
             except Exception as e:
-                print(f"Firefox failed: {e}")
+                print(f"Undetected Chrome failed: {e}")
                 self._driver = None
 
         # Fallback to regular Chrome with stealth config
         if self._driver is None:
-            # # Try undetected-chromedriver first (best anti-detection)
-            if UNDETECTED_CHROME_AVAILABLE:
-                try:
-                    options = uc.ChromeOptions()
-                    options.add_argument(
-                        "--disable-blink-features=AutomationControlled"
-                    )
-                    options.add_argument("--start-maximized")
-                    self._driver = uc.Chrome(options=options, version_main=None)
-                    self._status_async(
-                        "✅ Started undetected Chrome (anti-detection enabled)", "green"
-                    )
-                except Exception as e:
-                    print(f"Undetected Chrome failed: {e}")
-                    self._driver = None
             try:
                 chrome_opts = webdriver.ChromeOptions()
 
@@ -1358,69 +1656,89 @@ class VoucherScannerApp:
                 )
 
                 self._status_async("✅ Started Chrome with stealth config", "green")
-            except Exception:
-                pass
+                print("[DEBUG] Chrome driver created with stealth config")
+                self._open_all_shop_tabs()
+                try:
+                    self.start_browser_btn.config(style="Selected.TButton")
+                except Exception:
+                    pass
+                return self._driver
+            except Exception as e:
+                print(f"Chrome failed: {e}")
+                self._driver = None
 
-        # Try Safari
+        # Try Safari as last resort
         if self._driver is None:
             try:
                 self._driver = webdriver.Safari()
                 self._status_async("✅ Started Safari", "green")
+                print("[DEBUG] Safari driver created")
+                self._open_all_shop_tabs()
+                try:
+                    self.start_browser_btn.config(style="Selected.TButton")
+                except Exception:
+                    pass
+                return self._driver
             except Exception as e:
+                print(f"Safari failed: {e}")
                 raise RuntimeError("Could not start any browser") from e
-
-        # Open all shop tabs
-        if self._driver is not None:
-            self._open_all_shop_tabs()
-            try:
-                self.start_browser_btn.config(style="Selected.TButton")
-            except Exception:
-                pass
-
-        return self._driver
 
     def _open_all_shop_tabs(self):
         """Open all shop URLs in separate tabs."""
         if not self._driver:
+            print("[DEBUG] No driver available for opening tabs")
             return
 
         self._shop_windows = {}
         try:
-            first_shop = True
-            for shop_name, config in SHOPS.items():
-                if first_shop:
-                    print(f"[DEBUG] Opening first shop {shop_name} at {config['url']}")
-                    self._driver.get(config["url"])
-                    time.sleep(2)  # Wait for page load
-                    self._shop_windows[shop_name] = self._driver.current_window_handle
-                    print(
-                        f"[DEBUG] First shop {shop_name} opened, handle: {self._driver.current_window_handle}"
-                    )
-                    first_shop = False
-                else:
-                    print(f"[DEBUG] Opening new tab for {shop_name} at {config['url']}")
-                    self._driver.execute_script("window.open('');")
-                    time.sleep(0.5)  # Wait for new tab to be created
-                    self._driver.switch_to.window(self._driver.window_handles[-1])
-                    time.sleep(0.3)
-                    print(f"[DEBUG] Switched to new tab, getting URL: {config['url']}")
-                    self._driver.get(config["url"])
-                    time.sleep(2)  # Wait for page load
-                    self._shop_windows[shop_name] = self._driver.current_window_handle
-                    print(
-                        f"[DEBUG] Opened {shop_name} at {config['url']}, handle: {self._driver.current_window_handle}"
-                    )
+            shops_list = list(SHOPS.items())
+            print(f"[DEBUG] Opening {len(shops_list)} shop tabs...")
 
+            # Load first shop in main window
+            first_shop_name, first_config = shops_list[0]
+            print(
+                f"[DEBUG] Loading first shop {first_shop_name} in main window: {first_config['url']}"
+            )
+            self._driver.get(first_config["url"])
+            self._shop_windows[first_shop_name] = self._driver.current_window_handle
+            print(
+                f"[DEBUG] {first_shop_name} loaded, handle: {self._driver.current_window_handle}"
+            )
+
+            # Open remaining shops in new tabs
+            for shop_name, config in shops_list[1:]:
+                time.sleep(0.5)
+                print(f"[DEBUG] Opening new tab for {shop_name}: {config['url']}")
+
+                # On macOS/Firefox, use a more reliable method:
+                # Execute script in current context, create new tab via window.open('')
+                # then navigate it to the URL
+                self._driver.execute_script("window.open('');")
+                time.sleep(0.5)
+
+                # Switch to the new tab (the last one)
+                self._driver.switch_to.window(self._driver.window_handles[-1])
+                time.sleep(0.3)
+
+                # Now navigate this tab to the shop URL
+                self._driver.get(config["url"])
+                self._shop_windows[shop_name] = self._driver.current_window_handle
+                print(
+                    f"[DEBUG] {shop_name} opened, handle: {self._driver.current_window_handle}"
+                )
+                time.sleep(0.3)
+
+            # Switch back to first tab
             self._driver.switch_to.window(self._driver.window_handles[0])
             self._status_async(f"✅ Opened {len(SHOPS)} shop tabs", "green")
             print(
-                f"[DEBUG] Successfully opened {len(self._shop_windows)} shop tabs: {list(self._shop_windows.keys())}"
+                f"[DEBUG] Successfully opened all {len(self._shop_windows)} shop tabs: {list(self._shop_windows.keys())}"
             )
         except Exception as e:
-            print(f"[DEBUG] Error in _open_all_shop_tabs: {e}")
             import traceback
 
-            traceback.print_exc()
+            print(f"[DEBUG] Tab opening error: {e}")
+            print(traceback.format_exc())
             self._status_async(f"Error opening tabs: {e}", "red")
 
     def _open_shop(
@@ -1431,7 +1749,7 @@ class VoucherScannerApp:
         pin_text = self.pin.get().strip()
 
         if not code_text:
-            self.status.config(text="❌ No code to send", foreground="red")
+            self._safe_status("❌ No code to send", "red")
             return
 
         if pin_selector and not pin_text:
@@ -1671,6 +1989,293 @@ class VoucherScannerApp:
                 2,
                 cv2.LINE_AA,
             )
+
+    # ---------------------- Live Scanning (LAPTOP_CAM mode) ----------------------
+
+    def update_frame(self):
+        """Live scanning with stability threshold (LAPTOP_CAM mode only)."""
+        if not LAPTOP_CAM or not self.scanning:
+            return
+
+        ok, frame = self.cap.read()
+        if not ok:
+            self._safe_status("Camera read failed - retrying...", "red")
+            self.root.after(20, self.update_frame)
+            return
+
+        h, w = frame.shape[:2]
+        roi = self._compute_roi_rect(w, h)
+        x0, y0, x1, y1 = roi
+        vis = frame.copy()
+        now = time.time()
+
+        if (now - self._last_scan_t) * 1000.0 >= SCAN_EVERY_MS:
+            self._last_scan_t = now
+            crop = frame[y0:y1, x0:x1]
+
+            decoded_dict = self._scan_1d(crop)
+            card_info = decoded_dict.get("card")
+            pin_info = decoded_dict.get("pin")
+
+            # Rotated pass if *card* not found
+            if not card_info:
+                crop_rot = cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)
+                decoded_rot = self._scan_barcodes_only(crop_rot)
+                if decoded_rot:
+                    txt, sym, poly = decoded_rot[0]
+                    H, W = crop_rot.shape[:2]
+                    poly = np.array(poly, dtype=np.int32)
+                    poly_back = np.stack([poly[:, 1], W - 1 - poly[:, 0]], axis=1)
+                    card_info = (txt, sym, poly_back.tolist())
+
+            # --- *** STABILITY LOGIC *** ---
+
+            # --- 1. Handle Card Stability ---
+            if card_info:
+                txt, sym, poly = card_info
+                if txt == self._potential_code:
+                    self._potential_code_count += 1
+                else:
+                    self._potential_code = txt
+                    self._potential_code_type = sym
+                    self._potential_code_count = 1
+
+                poly_np = np.array(poly, dtype=np.int32)
+                if poly_np.ndim == 2 and poly_np.shape[1] == 2:
+                    poly_np[:, 0] += x0
+                    poly_np[:, 1] += y0
+                    self.last_boxes = [(poly_np, BOX_COLOR, f"{sym}")]
+                else:
+                    self.last_boxes = []
+            else:
+                self._potential_code = ""
+                self._potential_code_count = 0
+                self.last_boxes = []
+
+            # --- 2. Handle PIN Stability ---
+            if pin_info:
+                pin_txt, _, _ = pin_info
+                if pin_txt == self._potential_pin:
+                    self._potential_pin_count += 1
+                else:
+                    self._potential_pin = pin_txt
+                    self._potential_pin_count = 1
+            else:
+                self._potential_pin = ""
+                self._potential_pin_count = 0
+
+            # --- 3. Check for Lock-in ---
+            if self._potential_code_count >= self.STABLE_THRESHOLD:
+                is_new_lock = self._potential_code != self._stable_code
+                self._stable_code = self._potential_code
+
+                # Extract digits and apply trimming for ALDI/LIDL
+                digits_only = "".join(ch for ch in self._stable_code if ch.isdigit())
+                n = len(digits_only)
+
+                # Trim ALDI/LIDL 38-digit codes to 20 digits
+                if n == 38:
+                    digits_only = digits_only[18:]  # Drop first 18 digits to get 20
+
+                self.code.set(digits_only)
+                self.last_label = digits_only
+
+                status_text = f"✓ Locked: {self._potential_code_type}: {digits_only}"
+                if self._potential_pin_count >= self.STABLE_THRESHOLD:
+                    self._stable_pin = self._potential_pin
+                    self.pin.set(self._stable_pin)
+                    status_text += f" | PIN: {self._stable_pin}"
+                    self.last_label += f" | PIN: {self._stable_pin}"
+
+                self._safe_status(status_text, "green")
+
+                if is_new_lock:
+                    # Auto-select shop based on digit count
+                    try:
+                        candidates = []
+                        if n == 13:
+                            candidates = ["REWE"]
+                        elif n == 24:
+                            candidates = ["DM"]
+                        elif n == 20 or n == 38:  # 38 gets trimmed to 20
+                            candidates = ["ALDI", "LIDL"]
+                        elif n == 16:
+                            candidates = ["EDEKA"]
+
+                        if len(candidates) == 1:
+                            # Unambiguous: auto-select
+                            shop_to_select = candidates[0]
+                            self.selected_shop = shop_to_select
+                            try:
+                                prev = getattr(self, "selected_shop_button", None)
+                                if prev and prev._shop_name != shop_to_select:
+                                    self._set_button_style(prev, "normal")
+                            except Exception:
+                                pass
+                            for b in self.shop_buttons:
+                                try:
+                                    if getattr(b, "_shop_name", None) == shop_to_select:
+                                        self._set_button_style(b, "selected")
+                                        self.selected_shop_button = b
+                                    else:
+                                        self._set_button_style(b, "normal")
+                                except Exception:
+                                    pass
+                            self._safe_status(
+                                f"✓ Auto-selected: {shop_to_select}", "green"
+                            )
+                        elif len(candidates) > 1:
+                            # Ambiguous ALDI/LIDL: mark as ambiguous orange
+                            try:
+                                for b in self.shop_buttons:
+                                    if getattr(b, "_shop_name", None) in (
+                                        "ALDI",
+                                        "LIDL",
+                                    ):
+                                        self._set_button_style(b, "ambiguous")
+                                    else:
+                                        self._set_button_style(b, "normal")
+                            except Exception:
+                                pass
+                            self._safe_status(
+                                "⚠️ Ambiguous (ALDI/LIDL) - Please choose", "orange"
+                            )
+                    except Exception:
+                        pass
+
+                    # Enable shop buttons and Restart Detection button
+                    for btn in self.shop_buttons:
+                        if self._use_tk_buttons:
+                            btn.config(state="normal")
+                        else:
+                            btn.state(["!disabled"])
+                    try:
+                        self.take_picture_btn.state(["!disabled"])
+                    except Exception:
+                        pass
+                    beep()
+
+            elif self._potential_code_count > 0:
+                status_text = f"Tracking ({self._potential_code_count}/{self.STABLE_THRESHOLD}): {self._potential_code}"
+                self.last_label = self._potential_code
+
+                if self._potential_pin_count > 0:
+                    status_text += f" | PIN Tracking: {self._potential_pin}"
+                    self.last_label += f" | PIN: {self._potential_pin}"
+                self._safe_status(status_text, "orange")
+
+            else:
+                self.last_label = ""
+                if not self._stable_code:
+                    self._safe_status("Scanning...", "blue")
+
+        self._draw_scanner_overlay(vis, roi, success=(bool(self._stable_code)))
+        self._draw_boxes(vis, self.last_boxes, self.last_label)
+        rgb = cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
+        img = ImageTk.PhotoImage(Image.fromarray(rgb))
+        self.label.configure(image=img)
+        self.label.image = img
+
+        if self.scanning:
+            self.root.after(20, self.update_frame)
+
+    def reset_scan(self):
+        """Resets the scanner to its initial state but keeps the detected code."""
+        # Keep the detected code/PIN so they stay visible in text fields!
+        # self.code stays set, self.pin stays set
+
+        # Clear stable code/pin so scanning resets properly
+        self._stable_code = ""
+        self._stable_pin = ""
+
+        # Clear detection state (counters, potential values)
+        self._potential_code = ""
+        self._potential_code_count = 0
+        self._potential_pin = ""
+        self._potential_pin_count = 0
+
+        # Disable Restart Detection button
+        try:
+            self.take_picture_btn.state(["disabled"])
+        except Exception:
+            pass
+
+        # Disable and reset all shop buttons
+        for btn in self.shop_buttons:
+            if self._use_tk_buttons:
+                btn.config(state="disabled", bg="#f0f0f0")
+            else:
+                btn.state(["disabled"])
+
+        # Clear selected shop
+        self.selected_shop = None
+        self.selected_shop_button = None
+
+        self.last_boxes = []
+        self.last_label = ""
+        self._safe_status("Scanning...", "blue")
+        self.scanning = True
+
+    def _scan_barcodes_only(self, bgr):
+        """Performs only the pyzbar scan on a pre-processed image."""
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP, tileGridSize=CLAHE_TILE)
+        enhanced = clahe.apply(gray)
+        blurred = cv2.GaussianBlur(enhanced, (0, 0), UNSHARP_SIGMA)
+        sharp = cv2.addWeighted(
+            enhanced, 1.0 + UNSHARP_AMOUNT, blurred, -UNSHARP_AMOUNT, 0
+        )
+        kx = max(3, MORPH_KERNEL_W | 1)
+        ky = max(1, MORPH_KERNEL_H | 1)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kx, ky))
+        closed = cv2.morphologyEx(sharp, cv2.MORPH_CLOSE, kernel, iterations=MORPH_ITER)
+        results = decode(closed, symbols=SYMBOLS)
+
+        if not results:
+            results = decode(sharp, symbols=SYMBOLS)
+
+        out = []
+        for r in results or []:
+            txt = r.data.decode("utf-8", errors="replace").strip()
+            poly = [(p.x, p.y) for p in getattr(r, "polygon", [])] or []
+            out.append((txt, r.type, poly))
+
+        return out
+
+    def _try_multiple_scales(self, img):
+        """Try decoding barcode at different scales."""
+        scales = [0.8, 1.0, 1.2, 1.5, 2.0]
+        for scale in scales:
+            h, w = img.shape[:2]
+            scaled = cv2.resize(img, (int(w * scale), int(h * scale)))
+            results = decode(scaled, symbols=SYMBOLS)
+            if results:
+                return results
+        return None
+
+    def _try_rotations(self, img):
+        """Try decoding barcode at different rotations."""
+        angles = [0, 90, 180, 270]
+        for angle in angles:
+            if angle == 0:
+                rotated = img
+            else:
+                rotated = cv2.rotate(
+                    img,
+                    (
+                        cv2.ROTATE_90_CLOCKWISE
+                        if angle == 90
+                        else (
+                            cv2.ROTATE_180
+                            if angle == 180
+                            else cv2.ROTATE_90_COUNTERCLOCKWISE
+                        )
+                    ),
+                )
+            results = decode(rotated, symbols=SYMBOLS)
+            if results:
+                return results
+        return None
 
     # ---------------------- Cleanup ------------------------------------------
     def close(self):
