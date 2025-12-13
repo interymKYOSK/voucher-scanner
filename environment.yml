@@ -1,11 +1,32 @@
-name: barcode-scanner
+name: voucher-scanner
 channels:
   - conda-forge
 dependencies:
+  # Python version
   - python=3.12
+  
+  # Core image processing and computer vision
   - opencv
   - numpy
   - pillow
+  
+  # Barcode/QR code detection
   - pyzbar
   - zbar
+  
+  # Configuration management
   - python-dotenv
+  
+  # OCR support (optional but recommended)
+  - pytesseract
+  - tesseract
+  
+  # GUI support (usually included with Python, but explicit for conda)
+  - tk
+  
+  # Pip dependencies (not available in conda-forge)
+  - pip
+  - pip:
+    - selenium==4.15.2
+    - undetected-chromedriver==3.5.4
+    - webdriver-manager==4.0.1
