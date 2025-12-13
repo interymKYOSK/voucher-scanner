@@ -165,12 +165,14 @@ SHOPS = {
         "card_selector": "#card_number",
         "pin_selector": "#pin",
         "emoji": "🛒",
+        "simulate_human": True,
     },
     "DM": {
         "url": "https://www.dm.de/services/services-im-markt/geschenkkarten",
         "card_selector": "#credit-checker-printedCreditKey-input",
         "pin_selector": "#credit-checker-verificationCode-input",
         "emoji": "🛍️",
+        "simulate_human": False,
     },
     "ALDI": {
         "url": "https://www.helaba.com/de/aldi/",
@@ -178,6 +180,7 @@ SHOPS = {
         "card_selector": ".cardnumberfield",
         "pin_selector": ".pin",
         "emoji": "🥫",
+        "simulate_human": False,
     },
     "LIDL": {
         "url": "https://www.lidl.de/c/lidl-geschenkkarten/s10007775",
@@ -185,12 +188,14 @@ SHOPS = {
         "card_selector": ".cardnumberfield",
         "pin_selector": ".pin",
         "emoji": "🍍",
+        "simulate_human": False,
     },
     "EDEKA": {
         "url": "https://gutschein.avs.de/edeka-mh/home.htm",
         "card_selector": '#postform > div > div:nth-child(5) > div > div > input[type="text"]:nth-child(1)',
         "pin_selector": None,
         "emoji": "🍎",
+        "simulate_human": False,
     },
 }
 
@@ -241,51 +246,76 @@ SUCCESS_COLOR = (0, 220, 0)
 
 
 def human_typing(element, text):
-    """Type with random delays between keystrokes to mimic human behavior."""
+    """Type with random delays between keystrokes to mimic human behavior (optimized for CPU)."""
     for char in text:
         element.send_keys(char)
-        time.sleep(random.uniform(0.05, 0.1))
+        # Longer delays to reduce CPU usage while still appearing human
+        time.sleep(random.uniform(0.08, 0.15))
 
 
 def human_move_and_click(driver, element):
-    """Move mouse naturally before clicking."""
+    """Move mouse naturally before clicking (optimized for CPU)."""
     actions = ActionChains(driver)
-    actions.move_to_element(element).pause(random.uniform(0.3, 0.8)).click().perform()
+    # Reduced movement complexity to save CPU
+    actions.move_to_element(element).pause(random.uniform(0.5, 1.0)).click().perform()
 
 
 def simulate_human_behavior(driver):
-    """Simulate human browsing before filling form."""
+    """Simulate human browsing before filling form (lightweight, CPU-optimized)."""
     try:
-        # Random scroll
-        scroll_amount = random.randint(100, 500)
+        # Single scroll instead of multiple movements
+        scroll_amount = random.randint(100, 300)
         driver.execute_script(f"window.scrollTo(0, {scroll_amount})")
-        time.sleep(random.uniform(0.5, 1))
+        time.sleep(random.uniform(1.0, 2.0))
 
-        # Move mouse randomly
+        # Minimal mouse movement to avoid excessive CPU usage
         actions = ActionChains(driver)
-        for _ in range(random.randint(2, 4)):
-            x_offset = random.randint(-200, 200)
-            y_offset = random.randint(-200, 200)
-            try:
-                actions.move_by_offset(x_offset, y_offset).perform()
-            except Exception:
-                pass
-            time.sleep(random.uniform(0.1, 0.5))
+        # Just one small movement instead of 2-4 large ones
+        try:
+            actions.move_by_offset(
+                random.randint(-100, 100), random.randint(-100, 100)
+            ).perform()
+        except Exception:
+            pass
+        time.sleep(random.uniform(0.5, 1.0))
     except Exception:
         pass
 
 
 def wait_for_captcha(driver, timeout=180):
-    """Wait for invisible CAPTCHA to resolve."""
+    """Wait for CAPTCHA/bot-detection to resolve (invisible reCAPTCHA, etc.)."""
     try:
+        print(f"[DEBUG] Waiting for CAPTCHA with timeout {timeout}s...")
         wait = WebDriverWait(driver, timeout)
-        # Wait for common CAPTCHA iframes to disappear
-        wait.until_not(
-            EC.presence_of_element_located(
-                (By.CSS_SELECTOR, "iframe[src*='recaptcha'], iframe[src*='captcha']")
+
+        # Check for reCAPTCHA iframe
+        try:
+            wait.until_not(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "iframe[src*='recaptcha']")
+                )
             )
-        )
-    except Exception:
+            print("[DEBUG] reCAPTCHA iframe resolved")
+        except Exception:
+            pass
+
+        # Check for generic captcha iframes
+        try:
+            wait.until_not(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "iframe[src*='captcha']")
+                )
+            )
+            print("[DEBUG] Captcha iframe resolved")
+        except Exception:
+            pass
+
+        # Give browser time to complete any remaining background tasks
+        time.sleep(2)
+        print("[DEBUG] CAPTCHA check complete")
+
+    except Exception as e:
+        print(f"[DEBUG] CAPTCHA wait timed out or error: {e}")
         pass  # Timeout or no CAPTCHA present
 
 
@@ -1222,23 +1252,76 @@ class VoucherScannerApp:
                 return self._driver
             except Exception:
                 self._driver = None
-
-        # Try undetected-chromedriver first (best anti-detection)
-        if UNDETECTED_CHROME_AVAILABLE:
+        # Try Firefox
+        if self._driver is None:
             try:
-                options = uc.ChromeOptions()
-                options.add_argument("--disable-blink-features=AutomationControlled")
-                options.add_argument("--start-maximized")
-                self._driver = uc.Chrome(options=options, version_main=None)
-                self._status_async(
-                    "✅ Started undetected Chrome (anti-detection enabled)", "green"
+                firefox_opts = webdriver.FirefoxOptions()
+                # Anti-detection: hide webdriver
+                firefox_opts.set_preference("dom.webdriver.enabled", False)
+                firefox_opts.set_preference("media.peerconnection.enabled", False)
+                firefox_opts.set_preference("privacy.trackingprotection.enabled", True)
+
+                # Reduce CPU usage: disable unnecessary features
+                firefox_opts.set_preference("browser.cache.disk.enable", False)
+                firefox_opts.set_preference("browser.sessionstore.max_tabs_undo", 0)
+                firefox_opts.set_preference("dom.max_script_run_time", 30)
+                firefox_opts.set_preference("dom.disable_beforeunload", True)
+                firefox_opts.set_preference("browser.tabs.drawInTitlebar", False)
+
+                # Mimic real user agent
+                firefox_opts.set_preference(
+                    "general.useragent.override",
+                    "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
                 )
+
+                # Disable WebGL and plugins that increase CPU load
+                firefox_opts.set_preference("webgl.disabled", True)
+                firefox_opts.set_preference("plugin.state.java", 0)
+                firefox_opts.set_preference(
+                    "extensions.activeThemeID", "firefox-compact-light@mozilla.org"
+                )
+
+                self._driver = webdriver.Firefox(options=firefox_opts)
+
+                # Execute stealth script to hide Selenium detection
+                self._driver.execute_script(
+                    """
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5]
+                    });
+                """
+                )
+
+                self._status_async(
+                    "✅ Started Firefox (anti-detection enabled)", "green"
+                )
+                print("[DEBUG] Firefox driver created with anti-detection measures")
+                # DO NOT return here - let code fall through to open shop tabs below
+
             except Exception as e:
-                print(f"Undetected Chrome failed: {e}")
+                print(f"Firefox failed: {e}")
                 self._driver = None
 
         # Fallback to regular Chrome with stealth config
         if self._driver is None:
+            # # Try undetected-chromedriver first (best anti-detection)
+            if UNDETECTED_CHROME_AVAILABLE:
+                try:
+                    options = uc.ChromeOptions()
+                    options.add_argument(
+                        "--disable-blink-features=AutomationControlled"
+                    )
+                    options.add_argument("--start-maximized")
+                    self._driver = uc.Chrome(options=options, version_main=None)
+                    self._status_async(
+                        "✅ Started undetected Chrome (anti-detection enabled)", "green"
+                    )
+                except Exception as e:
+                    print(f"Undetected Chrome failed: {e}")
+                    self._driver = None
             try:
                 chrome_opts = webdriver.ChromeOptions()
 
@@ -1278,17 +1361,6 @@ class VoucherScannerApp:
             except Exception:
                 pass
 
-        # Try Firefox
-        if self._driver is None:
-            try:
-                firefox_opts = webdriver.FirefoxOptions()
-                firefox_opts.set_preference("dom.webdriver.enabled", False)
-                firefox_opts.set_preference("useAutomationExtension", False)
-                self._driver = webdriver.Firefox(options=firefox_opts)
-                self._status_async("✅ Started Firefox", "green")
-            except Exception:
-                pass
-
         # Try Safari
         if self._driver is None:
             try:
@@ -1317,18 +1389,38 @@ class VoucherScannerApp:
             first_shop = True
             for shop_name, config in SHOPS.items():
                 if first_shop:
+                    print(f"[DEBUG] Opening first shop {shop_name} at {config['url']}")
                     self._driver.get(config["url"])
+                    time.sleep(2)  # Wait for page load
                     self._shop_windows[shop_name] = self._driver.current_window_handle
+                    print(
+                        f"[DEBUG] First shop {shop_name} opened, handle: {self._driver.current_window_handle}"
+                    )
                     first_shop = False
                 else:
+                    print(f"[DEBUG] Opening new tab for {shop_name} at {config['url']}")
                     self._driver.execute_script("window.open('');")
+                    time.sleep(0.5)  # Wait for new tab to be created
                     self._driver.switch_to.window(self._driver.window_handles[-1])
+                    time.sleep(0.3)
+                    print(f"[DEBUG] Switched to new tab, getting URL: {config['url']}")
                     self._driver.get(config["url"])
+                    time.sleep(2)  # Wait for page load
                     self._shop_windows[shop_name] = self._driver.current_window_handle
+                    print(
+                        f"[DEBUG] Opened {shop_name} at {config['url']}, handle: {self._driver.current_window_handle}"
+                    )
 
             self._driver.switch_to.window(self._driver.window_handles[0])
             self._status_async(f"✅ Opened {len(SHOPS)} shop tabs", "green")
+            print(
+                f"[DEBUG] Successfully opened {len(self._shop_windows)} shop tabs: {list(self._shop_windows.keys())}"
+            )
         except Exception as e:
+            print(f"[DEBUG] Error in _open_all_shop_tabs: {e}")
+            import traceback
+
+            traceback.print_exc()
             self._status_async(f"Error opening tabs: {e}", "red")
 
     def _open_shop(
@@ -1390,9 +1482,11 @@ class VoucherScannerApp:
                     driver.get(url)
                     self._shop_windows[site_name] = driver.current_window_handle
 
-                # Simulate human behavior before interacting
+                # Simulate human behavior only for shops that need it (e.g., REWE)
                 time.sleep(random.uniform(1.5, 3))
-                simulate_human_behavior(driver)
+                shop_cfg = SHOPS.get(site_name, {})
+                if shop_cfg.get("simulate_human", False):
+                    simulate_human_behavior(driver)
 
                 # Wait for potential CAPTCHA (but don't block if none present)
                 try:

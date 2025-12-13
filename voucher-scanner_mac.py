@@ -177,12 +177,14 @@ SHOPS = {
         "card_selector": "#card_number",
         "pin_selector": "#pin",
         "emoji": "🛒",
+        "simulate_human": True,
     },
     "DM": {
         "url": "https://www.dm.de/services/services-im-markt/geschenkkarten",
         "card_selector": "#credit-checker-printedCreditKey-input",
         "pin_selector": "#credit-checker-verificationCode-input",
         "emoji": "🛍️",
+        "simulate_human": False,
     },
     "ALDI": {
         "url": "https://www.helaba.com/de/aldi/",
@@ -190,6 +192,7 @@ SHOPS = {
         "card_selector": ".cardnumberfield",
         "pin_selector": ".pin",
         "emoji": "🥫",
+        "simulate_human": False,
     },
     "LIDL": {
         "url": "https://www.lidl.de/c/lidl-geschenkkarten/s10007775",
@@ -197,12 +200,14 @@ SHOPS = {
         "card_selector": ".cardnumberfield",
         "pin_selector": ".pin",
         "emoji": "🍍",
+        "simulate_human": False,
     },
     "EDEKA": {
         "url": "https://gutschein.avs.de/edeka-mh/home.htm",
         "card_selector": '#postform > div > div:nth-child(5) > div > div > input[type="text"]:nth-child(1)',
         "pin_selector": None,
         "emoji": "🍎",
+        "simulate_human": False,
     },
 }
 
@@ -245,7 +250,7 @@ MORPH_KERNEL_W = 21
 MORPH_KERNEL_H = 3
 MORPH_ITER = 1
 SCAN_EVERY_MS = 150  # scanning cadence (ms)
-STABLE_THRESHOLD = 2  # consecutive frames to be "sure" (2 = one confirmation scan)
+STABLE_THRESHOLD = 3  # consecutive frames to be "sure" (2 = one confirmation scan)
 DRAW_DASH_GAP = 14
 CORNER_LEN = 26
 OVERLAY_COLOR = (0, 200, 255)  # BGR
@@ -255,51 +260,76 @@ SUCCESS_COLOR = (0, 220, 0)
 
 
 def human_typing(element, text):
-    """Type with random delays between keystrokes to mimic human behavior."""
+    """Type with random delays between keystrokes to mimic human behavior (optimized for CPU)."""
     for char in text:
         element.send_keys(char)
-        time.sleep(random.uniform(0.01, 0.05))
+        # Longer delays to reduce CPU usage while still appearing human
+        time.sleep(random.uniform(0.08, 0.15))
 
 
 def human_move_and_click(driver, element):
-    """Move mouse naturally before clicking."""
+    """Move mouse naturally before clicking (optimized for CPU)."""
     actions = ActionChains(driver)
-    actions.move_to_element(element).pause(random.uniform(0.1, 0.5)).click().perform()
+    # Reduced movement complexity to save CPU
+    actions.move_to_element(element).pause(random.uniform(0.5, 1.0)).click().perform()
 
 
 def simulate_human_behavior(driver):
-    """Simulate human browsing before filling form."""
+    """Simulate human browsing before filling form (lightweight, CPU-optimized)."""
     try:
-        # Random scroll
-        scroll_amount = random.randint(100, 500)
+        # Single scroll instead of multiple movements
+        scroll_amount = random.randint(100, 300)
         driver.execute_script(f"window.scrollTo(0, {scroll_amount})")
-        time.sleep(random.uniform(0.1, 1))
+        time.sleep(random.uniform(1.0, 2.0))
 
-        # Move mouse randomly
+        # Minimal mouse movement to avoid excessive CPU usage
         actions = ActionChains(driver)
-        for _ in range(random.randint(2, 4)):
-            x_offset = random.randint(-200, 200)
-            y_offset = random.randint(-200, 200)
-            try:
-                actions.move_by_offset(x_offset, y_offset).perform()
-            except Exception:
-                pass
-            time.sleep(random.uniform(0.1, 0.5))
+        # Just one small movement instead of 2-4 large ones
+        try:
+            actions.move_by_offset(
+                random.randint(-100, 100), random.randint(-100, 100)
+            ).perform()
+        except Exception:
+            pass
+        time.sleep(random.uniform(0.5, 1.0))
     except Exception:
         pass
 
 
-def wait_for_captcha(driver, timeout=60):
-    """Wait for invisible CAPTCHA to resolve."""
+def wait_for_captcha(driver, timeout=180):
+    """Wait for CAPTCHA/bot-detection to resolve (invisible reCAPTCHA, etc.)."""
     try:
+        print(f"[DEBUG] Waiting for CAPTCHA with timeout {timeout}s...")
         wait = WebDriverWait(driver, timeout)
-        # Wait for common CAPTCHA iframes to disappear
-        wait.until_not(
-            EC.presence_of_element_located(
-                (By.CSS_SELECTOR, "iframe[src*='recaptcha'], iframe[src*='captcha']")
+
+        # Check for reCAPTCHA iframe
+        try:
+            wait.until_not(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "iframe[src*='recaptcha']")
+                )
             )
-        )
-    except Exception:
+            print("[DEBUG] reCAPTCHA iframe resolved")
+        except Exception:
+            pass
+
+        # Check for generic captcha iframes
+        try:
+            wait.until_not(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "iframe[src*='captcha']")
+                )
+            )
+            print("[DEBUG] Captcha iframe resolved")
+        except Exception:
+            pass
+
+        # Give browser time to complete any remaining background tasks
+        time.sleep(2)
+        print("[DEBUG] CAPTCHA check complete")
+
+    except Exception as e:
+        print(f"[DEBUG] CAPTCHA wait timed out or error: {e}")
         pass  # Timeout or no CAPTCHA present
 
 
@@ -393,14 +423,11 @@ class VoucherScannerApp:
             side="left", padx=(2, 12)
         )
 
-        # Start browser hint + button (new row above shops)
-        if not LAPTOP_CAM:
-            start_hint = ttk.Label(
-                main_frame, text="Start browser first (open shop tabs if needed)"
-            )
-            start_hint.grid(
-                row=1, column=0, columnspan=4, sticky="w", padx=12, pady=(8, 0)
-            )
+        # Start browser hint + button (shown in both LAPTOP_CAM and picture mode)
+        start_hint = ttk.Label(
+            main_frame, text="Start browser first (open shop tabs if needed)"
+        )
+        start_hint.grid(row=1, column=0, columnspan=4, sticky="w", padx=12, pady=(8, 0))
 
         start_frame = ttk.Frame(main_frame)
         start_frame.grid(
@@ -473,10 +500,6 @@ class VoucherScannerApp:
         )
         self.start_browser_btn.pack(side="left", padx=2)
 
-        # Hide/disable Start Browser button in LAPTOP_CAM mode (use Fill Selected instead)
-        if LAPTOP_CAM:
-            self.start_browser_btn.pack_forget()
-
         if not LAPTOP_CAM:
             # Picture mode: show Take Picture button
             self.take_picture_btn = ttk.Button(
@@ -526,32 +549,48 @@ class VoucherScannerApp:
         self.reset_camera_btn.pack(side="left", padx=2)
 
         self.shop_buttons = []
+        self.shop_button_frames = {}  # Store frames for styling
+
         for name, config in SHOPS.items():
             text = f"{name}"
             if self._use_tk_buttons:
-                # Use tk.Button on macOS for color support
-                btn = tk.Button(
+                # macOS: Use frame as background indicator + button inside
+                frame = tk.Frame(
                     shop_frame,
-                    text=text,
-                    width=12,
-                    bg="#f0f0f0",
-                    activebackground="#e0e0e0",
-                    relief="raised",
-                    bd=1,
-                    state="disabled",
+                    bg="#E8E8E8",  # Normal gray background
+                    relief="flat",
+                    highlightthickness=2,
+                    highlightbackground="#999999",
                 )
+                btn = tk.Button(
+                    frame,
+                    text=text,
+                    width=10,
+                    bg="#E8E8E8",
+                    fg="black",
+                    activebackground="#D0D0D0",
+                    relief="flat",
+                    bd=0,
+                    state="disabled",
+                    font=("Helvetica", 11, "normal"),
+                    padx=8,
+                    pady=4,
+                    highlightthickness=0,
+                )
+                btn.pack(padx=2, pady=2)
+                frame.pack(side="left", padx=2, pady=2)
             else:
                 btn = ttk.Button(shop_frame, text=text, width=12, style="TButton")
                 btn.state(["disabled"])
+
             btn._orig_text = text
             btn._shop_name = name
-            btn._bg_normal = "#f0f0f0" if self._use_tk_buttons else None
-            btn._bg_selected = "#b7ebc6" if self._use_tk_buttons else None
-            btn._bg_ambiguous = "#ffd59e" if self._use_tk_buttons else None
+            btn._frame = frame if self._use_tk_buttons else None
             # Selecting a shop (does not open browser yet)
             btn.config(command=lambda n=name, b=btn: self._select_shop(n, b))
-            btn.pack(side="left", padx=2)
             self.shop_buttons.append(btn)
+            if self._use_tk_buttons:
+                self.shop_button_frames[name] = (frame, btn)
 
         # State
         self.picture_mode = not LAPTOP_CAM  # Picture mode only if not LAPTOP_CAM
@@ -623,13 +662,34 @@ class VoucherScannerApp:
     def _set_button_style(self, button, style_type):
         """Set button style: 'normal', 'selected', or 'ambiguous'."""
         if self._use_tk_buttons:
+            # macOS: Style the frame around the button for visibility
+            frame = button._frame
             if style_type == "selected":
-                button.config(bg="#b7ebc6")
+                # Green for selected
+                frame.config(
+                    bg="#00CC00",
+                    highlightbackground="#009900",
+                    highlightcolor="#009900",
+                )
+                button.config(bg="#00CC00", font=("Helvetica", 11, "bold"))
             elif style_type == "ambiguous":
-                button.config(bg="#ffd59e")
+                # Orange for ambiguous (needs manual choice)
+                frame.config(
+                    bg="#FF9900",
+                    highlightbackground="#CC6600",
+                    highlightcolor="#CC6600",
+                )
+                button.config(bg="#FF9900", font=("Helvetica", 11, "bold"))
             else:  # normal
-                button.config(bg="#f0f0f0")
+                # Gray for normal/disabled
+                frame.config(
+                    bg="#E8E8E8",
+                    highlightbackground="#999999",
+                    highlightcolor="#999999",
+                )
+                button.config(bg="#E8E8E8", font=("Helvetica", 11, "normal"))
         else:
+            # ttk styling for Linux/Windows
             if style_type == "selected":
                 button.config(style="Selected.TButton")
             elif style_type == "ambiguous":
@@ -955,7 +1015,6 @@ class VoucherScannerApp:
                 elif n == 20 or n == 38:
                     # ALDI and LIDL both accept 20 (or 38 -> drop first 18)
                     candidates = ["ALDI", "LIDL"]
-
                 if len(candidates) == 1:
                     shop_to_select = candidates[0]
                     # set selection and style
@@ -964,16 +1023,16 @@ class VoucherScannerApp:
                     try:
                         prev = getattr(self, "selected_shop_button", None)
                         if prev and prev._shop_name != shop_to_select:
-                            prev.config(style="TButton")
+                            self._set_button_style(prev, "normal")
                     except Exception:
                         pass
                     for b in self.shop_buttons:
                         try:
                             if getattr(b, "_shop_name", None) == shop_to_select:
-                                b.config(style="Selected.TButton")
+                                self._set_button_style(b, "selected")
                                 self.selected_shop_button = b
                             else:
-                                b.config(style="TButton")
+                                self._set_button_style(b, "normal")
                         except Exception:
                             pass
                     self.status.config(
@@ -992,9 +1051,9 @@ class VoucherScannerApp:
                     try:
                         for b in self.shop_buttons:
                             if getattr(b, "_shop_name", None) in ("ALDI", "LIDL"):
-                                b.config(style="Ambiguous.TButton")
+                                self._set_button_style(b, "ambiguous")
                             else:
-                                b.config(style="TButton")
+                                self._set_button_style(b, "normal")
                     except Exception:
                         pass
                     self.status.config(
@@ -1459,17 +1518,63 @@ class VoucherScannerApp:
             # Try Firefox first in LAPTOP_CAM mode
             try:
                 firefox_opts = webdriver.FirefoxOptions()
+                # Anti-detection: hide webdriver
                 firefox_opts.set_preference("dom.webdriver.enabled", False)
-                firefox_opts.set_preference("useAutomationExtension", False)
+                firefox_opts.set_preference("media.peerconnection.enabled", False)
+                firefox_opts.set_preference("privacy.trackingprotection.enabled", True)
+
+                # Reduce CPU usage: disable unnecessary features
+                firefox_opts.set_preference("browser.cache.disk.enable", False)
+                firefox_opts.set_preference("browser.sessionstore.max_tabs_undo", 0)
+                firefox_opts.set_preference("dom.max_script_run_time", 30)
+                firefox_opts.set_preference("dom.disable_beforeunload", True)
+                firefox_opts.set_preference("browser.tabs.drawInTitlebar", False)
+
+                # Mimic real user agent
+                firefox_opts.set_preference(
+                    "general.useragent.override",
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                )
+
+                # Disable WebGL and plugins that increase CPU load
+                firefox_opts.set_preference("webgl.disabled", True)
+                firefox_opts.set_preference("plugin.state.java", 0)
+                firefox_opts.set_preference(
+                    "extensions.activeThemeID", "firefox-compact-light@mozilla.org"
+                )
+
                 self._driver = webdriver.Firefox(options=firefox_opts)
-                self._status_async("✅ Started Firefox", "green")
+
+                # Execute stealth script to hide Selenium detection
+                self._driver.execute_script(
+                    """
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5]
+                    });
+                """
+                )
+
+                self._status_async(
+                    "✅ Started Firefox (anti-detection enabled)", "green"
+                )
+                print("[DEBUG] Firefox driver created with anti-detection measures")
+                # Open all shop tabs immediately after Firefox starts
+                self._open_all_shop_tabs()
+                try:
+                    self.start_browser_btn.config(style="Selected.TButton")
+                except Exception:
+                    pass
                 return self._driver
             except Exception as e:
                 print(f"Firefox failed: {e}")
                 self._driver = None
 
+        # If Firefox failed, try Chrome fallbacks
         # Try undetected-chromedriver first (best anti-detection)
-        if UNDETECTED_CHROME_AVAILABLE:
+        if self._driver is None and UNDETECTED_CHROME_AVAILABLE:
             try:
                 options = uc.ChromeOptions()
                 options.add_argument("--disable-blink-features=AutomationControlled")
@@ -1478,6 +1583,13 @@ class VoucherScannerApp:
                 self._status_async(
                     "✅ Started undetected Chrome (anti-detection enabled)", "green"
                 )
+                print("[DEBUG] Undetected Chrome driver created")
+                self._open_all_shop_tabs()
+                try:
+                    self.start_browser_btn.config(style="Selected.TButton")
+                except Exception:
+                    pass
+                return self._driver
             except Exception as e:
                 print(f"Undetected Chrome failed: {e}")
                 self._driver = None
@@ -1520,55 +1632,59 @@ class VoucherScannerApp:
                 )
 
                 self._status_async("✅ Started Chrome with stealth config", "green")
-            except Exception:
-                pass
+                print("[DEBUG] Chrome driver created with stealth config")
+                self._open_all_shop_tabs()
+                try:
+                    self.start_browser_btn.config(style="Selected.TButton")
+                except Exception:
+                    pass
+                return self._driver
+            except Exception as e:
+                print(f"Chrome failed: {e}")
+                self._driver = None
 
-        # Try Firefox (if not already tried above)
-        if self._driver is None and not LAPTOP_CAM:
-            try:
-                firefox_opts = webdriver.FirefoxOptions()
-                firefox_opts.set_preference("dom.webdriver.enabled", False)
-                firefox_opts.set_preference("useAutomationExtension", False)
-                self._driver = webdriver.Firefox(options=firefox_opts)
-                self._status_async("✅ Started Firefox", "green")
-            except Exception:
-                pass
-
-        # Try Safari
+        # Try Safari as last resort
         if self._driver is None:
             try:
                 self._driver = webdriver.Safari()
                 self._status_async("✅ Started Safari", "green")
+                print("[DEBUG] Safari driver created")
+                self._open_all_shop_tabs()
+                try:
+                    self.start_browser_btn.config(style="Selected.TButton")
+                except Exception:
+                    pass
+                return self._driver
             except Exception as e:
+                print(f"Safari failed: {e}")
                 raise RuntimeError("Could not start any browser") from e
-
-        # Open all shop tabs
-        if self._driver is not None:
-            self._open_all_shop_tabs()
-            try:
-                self.start_browser_btn.config(style="Selected.TButton")
-            except Exception:
-                pass
-
-        return self._driver
 
     def _open_all_shop_tabs(self):
         """Open all shop URLs in separate tabs."""
         if not self._driver:
+            print("[DEBUG] No driver available for opening tabs")
             return
 
         self._shop_windows = {}
         try:
             shops_list = list(SHOPS.items())
+            print(f"[DEBUG] Opening {len(shops_list)} shop tabs...")
 
             # Load first shop in main window
             first_shop_name, first_config = shops_list[0]
+            print(
+                f"[DEBUG] Loading first shop {first_shop_name} in main window: {first_config['url']}"
+            )
             self._driver.get(first_config["url"])
             self._shop_windows[first_shop_name] = self._driver.current_window_handle
+            print(
+                f"[DEBUG] {first_shop_name} loaded, handle: {self._driver.current_window_handle}"
+            )
 
             # Open remaining shops in new tabs
             for shop_name, config in shops_list[1:]:
                 time.sleep(0.5)
+                print(f"[DEBUG] Opening new tab for {shop_name}: {config['url']}")
 
                 # On macOS/Firefox, use a more reliable method:
                 # Execute script in current context, create new tab via window.open('')
@@ -1583,15 +1699,21 @@ class VoucherScannerApp:
                 # Now navigate this tab to the shop URL
                 self._driver.get(config["url"])
                 self._shop_windows[shop_name] = self._driver.current_window_handle
+                print(
+                    f"[DEBUG] {shop_name} opened, handle: {self._driver.current_window_handle}"
+                )
                 time.sleep(0.3)
 
             # Switch back to first tab
             self._driver.switch_to.window(self._driver.window_handles[0])
             self._status_async(f"✅ Opened {len(SHOPS)} shop tabs", "green")
+            print(
+                f"[DEBUG] Successfully opened all {len(self._shop_windows)} shop tabs: {list(self._shop_windows.keys())}"
+            )
         except Exception as e:
             import traceback
 
-            print(f"Tab opening error: {e}")
+            print(f"[DEBUG] Tab opening error: {e}")
             print(traceback.format_exc())
             self._status_async(f"Error opening tabs: {e}", "red")
 
@@ -1654,9 +1776,11 @@ class VoucherScannerApp:
                     driver.get(url)
                     self._shop_windows[site_name] = driver.current_window_handle
 
-                # Simulate human behavior before interacting
+                # Simulate human behavior only for shops that need it (e.g., REWE)
                 time.sleep(random.uniform(1.5, 3))
-                simulate_human_behavior(driver)
+                shop_cfg = SHOPS.get(site_name, {})
+                if shop_cfg.get("simulate_human", False):
+                    simulate_human_behavior(driver)
 
                 # Wait for potential CAPTCHA (but don't block if none present)
                 try:
