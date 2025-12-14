@@ -35,12 +35,18 @@ import os
 load_dotenv()
 
 # ---- Camera configuration ------------------------------------------------
+# Read from environment variables (can be set in .env file or system environment)
+IP_phone = os.getenv("IP_PHONE", "192.168.178.46")
 LAPTOP_CAM = (
     os.getenv("LAPTOP_CAM", "False").lower() == "true"
 )  # Convert string to boolean
-IP_phone = os.getenv("IP_PHONE", "192.168.178.46")
-
-OCR_SWITCH = False
+SCANNING_FLAG = LAPTOP_CAM
+# TODO: make scanning possible for IP Webcam
+# SCANNING_MODE = os.getenv(
+#     "SCANNING_MODE", "Picture Mode"
+# )  # "Picture Mode" or "Live Auto-Scan"
+# SCANNING_FLAG = True if SCANNING_MODE == "Live Auto-Scan" else False
+OCR_SWITCH = False  # Fallback for linear barcodes if pyzbar fails
 
 MAC = False  # Set to True if running on macOS, False for Linux
 if platform.system() == "Darwin":  # macOS
@@ -344,8 +350,7 @@ class VoucherScannerApp:
     def __init__(self, root: tk.Tk, camera_source: str = CAMERA_SOURCE):
         self.root = root
         self.camera_source = camera_source  # Store for reconnection
-        mode_str = "Live Auto-Scan" if LAPTOP_CAM else "Picture Mode"
-        root.title(f"Voucher Scanner - {mode_str}")
+        root.title(f"Voucher Scanner - {SCANNING_MODE}")
         geometry_width = round(RES_PHONE_WIDTH + RES_PHONE_WIDTH * 0.1)
         geometry_height = round(RES_PHONE_HEIGHT + RES_PHONE_HEIGHT)
         root.geometry(f"{geometry_width}x{geometry_height}")
@@ -429,7 +434,7 @@ class VoucherScannerApp:
             side="left", padx=(2, 12)
         )
 
-        # Start browser hint + button (shown in both LAPTOP_CAM and picture mode)
+        # Start browser hint + button (shown in both SCANNING and picture mode)
         start_hint = ttk.Label(
             main_frame, text="Start browser first (open shop tabs if needed)"
         )
@@ -440,12 +445,12 @@ class VoucherScannerApp:
             row=2, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 6)
         )
 
-        # Take picture row - shown in picture mode (LAPTOP_CAM=False) and live mode (LAPTOP_CAM=True)
+        # Take picture row - shown in picture mode (SCANNING_FLAG=False) and live mode (SCANNING_FLAG=True)
         take_hint = ttk.Label(
             main_frame, text="Take picture to freeze frame for scanning"
         )
         take_hint.grid(row=3, column=0, columnspan=4, sticky="w", padx=12, pady=(4, 0))
-        if LAPTOP_CAM:
+        if SCANNING_FLAG:
             take_hint.config(text="Take picture to restart detection")
 
         take_frame = ttk.Frame(main_frame)
@@ -506,7 +511,7 @@ class VoucherScannerApp:
         )
         self.start_browser_btn.pack(side="left", padx=2)
 
-        if not LAPTOP_CAM:
+        if not SCANNING_FLAG:
             # Picture mode: show Take Picture button
             self.take_picture_btn = ttk.Button(
                 take_frame,
@@ -608,7 +613,7 @@ class VoucherScannerApp:
         self._driver = None
         self._shop_windows = {}
 
-        # Live scanning state (for LAPTOP_CAM mode)
+        # Live scanning state (for SCANNING_FLAG mode)
         self._last_scan_t = 0.0
         self._potential_code = ""
         self._potential_code_type = ""
@@ -624,7 +629,7 @@ class VoucherScannerApp:
         )
         self._frozen_frame = None  # Stores frozen frame when code is locked
         self._lock_time = 0.0  # Time when code was locked
-        if LAPTOP_CAM:
+        if SCANNING_FLAG:
             self.update_frame()
         else:
             self.update_live_video()
@@ -1163,99 +1168,6 @@ class VoucherScannerApp:
         self.root.after(30, self.update_live_video)
 
     # ==================== Scanning Methods ====================
-    def _scan_1d_old(self, bgr):
-        import cv2, numpy as np
-        from pyzbar.pyzbar import decode
-        import pytesseract
-
-        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-
-        # -----------------------
-        # 1) BARCODE first
-        # -----------------------
-        clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP, tileGridSize=CLAHE_TILE)
-        enhanced = clahe.apply(gray)
-        blurred = cv2.GaussianBlur(enhanced, (0, 0), UNSHARP_SIGMA)
-        sharp = cv2.addWeighted(
-            enhanced, 1.0 + UNSHARP_AMOUNT, blurred, -UNSHARP_AMOUNT, 0
-        )
-
-        kx = max(3, MORPH_KERNEL_W | 1)
-        ky = max(1, MORPH_KERNEL_H | 1)
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kx, ky))
-        closed = cv2.morphologyEx(sharp, cv2.MORPH_CLOSE, kernel, iterations=MORPH_ITER)
-
-        results = decode(closed, symbols=SYMBOLS)
-        if not results:
-            results = decode(sharp, symbols=SYMBOLS)
-
-        barcode_result = None
-        if results:
-            r = results[0]
-            txt = r.data.decode("utf-8", errors="replace").strip()
-            poly = [(p.x, p.y) for p in getattr(r, "polygon", [])] or []
-            barcode_result = (txt, r.type, poly)
-
-        if barcode_result:
-            return {"card": barcode_result, "pin": None}
-
-        # -----------------------
-        # 2) OCR fallback for multi-line numeric ID
-        # -----------------------
-        h, w = gray.shape
-        # Large crop because number layouts vary
-        roi = gray[int(0.30 * h) : int(0.98 * h), int(0.03 * w) : int(0.97 * w)]
-
-        # --- candidates for iterative OCR ---
-        transforms = [
-            lambda x: x,
-            lambda x: cv2.bilateralFilter(x, 9, 40, 40),
-            lambda x: cv2.GaussianBlur(x, (5, 5), 0),
-            lambda x: cv2.adaptiveThreshold(
-                x, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 35, 10
-            ),
-            lambda x: cv2.adaptiveThreshold(
-                x, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 41, 8
-            ),
-            lambda x: cv2.threshold(x, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],
-            lambda x: cv2.medianBlur(x, 3),
-            lambda x: cv2.resize(
-                x, None, fx=2.2, fy=2.2, interpolation=cv2.INTER_CUBIC
-            ),
-        ]
-
-        def run_ocr(img):
-            txt = pytesseract.image_to_string(
-                img, config="--psm 6 --oem 3 -c tessedit_char_whitelist=0123456789"
-            )
-            lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
-            nums = ["".join(ch for ch in ln if ch.isdigit()) for ln in lines]
-            nums = [n for n in nums if MIN_OCR_DIGITS <= len(n) <= MAX_OCR_DIGITS]
-            if nums:
-                return max(nums, key=len)
-            return None
-
-        # Try sequential transforms until one produces a valid ID
-        best = None
-        img = roi.copy()
-        for t in transforms:
-            try:
-                mod = t(img)
-                if mod.ndim == 3:
-                    mod = cv2.cvtColor(mod, cv2.COLOR_BGR2GRAY)
-                n = run_ocr(mod)
-                if n:
-                    best = n
-                    break
-            except:
-                continue
-
-        if best:
-            poly = [(0, 0), (w, 0), (w, h), (0, h)]
-            return {"card": (best, "OCR", poly), "pin": None}
-
-        return {"card": None, "pin": None}
-
     def _scan_1d(self, bgr):
         import cv2, numpy as np
         from pyzbar.pyzbar import decode
@@ -1990,11 +1902,11 @@ class VoucherScannerApp:
                 cv2.LINE_AA,
             )
 
-    # ---------------------- Live Scanning (LAPTOP_CAM mode) ----------------------
+    # ---------------------- Live Scanning (SCANNING mode) ----------------------
 
     def update_frame(self):
-        """Live scanning with stability threshold (LAPTOP_CAM mode only)."""
-        if not LAPTOP_CAM or not self.scanning:
+        """Live scanning with stability threshold (SCANNING mode only)."""
+        if not SCANNING_FLAG or not self.scanning:
             return
 
         ok, frame = self.cap.read()
