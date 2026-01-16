@@ -34,8 +34,7 @@ import os
 
 load_dotenv()
 
-# ---- Camera configuration ------------------------------------------------
-# Read from environment variables (can be set in .env file or system environment)
+# ---- Global configuration variables (will be set by setup window) --------
 IP_phone = os.getenv("IP_PHONE", "192.168.1.102")
 PORT = os.getenv("PORT", "8080")
 LAPTOP_CAM = (
@@ -53,20 +52,8 @@ MAC = False  # Set to True if running on macOS, False for Linux
 if platform.system() == "Darwin":  # macOS
     MAC = True
 
-if LAPTOP_CAM:
-    CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", "0")
-    RES_PHONE_WIDTH = 640
-    RES_PHONE_HEIGHT = 480
-else:
-    RES_PHONE_WIDTH = 640
-    RES_PHONE_HEIGHT = 480
-    if IP_phone:
-        CAMERA_SOURCE = os.environ.get(
-            "CAMERA_SOURCE", f"http://{IP_phone}:{PORT}/video"
-        )
-    else:
-        print("ERROR: IP_PHONE environment variable not set. Set it in your .env file.")
-        sys.exit(1)
+RES_PHONE_WIDTH = 640
+RES_PHONE_HEIGHT = 480
 
 
 def create_capture(source: str) -> cv2.VideoCapture:
@@ -289,6 +276,16 @@ def human_move_and_click(driver, element):
     actions.move_to_element(element).pause(random.uniform(0.5, 1.0)).click().perform()
 
 
+def fast_typing(element, text):
+    """Type instantly without delays for speed (when simulate_human=False)."""
+    element.send_keys(text)
+
+
+def fast_click(driver, element):
+    """Click instantly without human-like delays (when simulate_human=False)."""
+    element.click()
+
+
 def simulate_human_behavior(driver):
     """Simulate human browsing before filling form (lightweight, CPU-optimized)."""
     try:
@@ -348,9 +345,159 @@ def wait_for_captcha(driver, timeout=180):
         pass  # Timeout or no CAPTCHA present
 
 
+class SetupWindow:
+    """Setup window to configure IP, PORT, and camera choice."""
+
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("Voucher Scanner - Setup")
+        self.root.geometry("600x600")
+        self.result = None
+
+        # Main frame
+        main_frame = ttk.Frame(root, padding="20")
+        main_frame.pack(fill="both", expand=True)
+
+        # Title
+        title = ttk.Label(
+            main_frame,
+            text="📱 Voucher Scanner Setup",
+            font=("Arial", 16, "bold"),
+        )
+        title.pack(pady=(0, 20))
+
+        # Explanation
+        explanation = tk.Text(
+            main_frame, height=8, width=70, wrap="word", relief="flat"
+        )
+        explanation.pack(pady=(0, 15), padx=5)
+        explanation.insert(
+            "1.0",
+            """📲 Instructions:
+
+Android: Download and start "IP Webcam" app
+→ Enable camera access and start the server
+
+iOS: Download and start "DroidCam" app
+→ Enable camera access and start the connection
+
+Make sure your laptop is in the same WiFi network as your phone.
+Enter the IP address shown in the app below.""",
+        )
+        # Get defaults from environment
+        default_ip = os.getenv("IP_PHONE", "192.168.1.184")
+        default_port = os.getenv("PORT", "8080")
+        default_use_laptop = os.getenv("LAPTOP_CAM", "False").lower() == "true"
+
+        # Camera choice frame
+        camera_frame = ttk.LabelFrame(main_frame, text="Camera Selection", padding="10")
+        camera_frame.pack(fill="x", pady=(0, 20))
+
+        self.camera_choice = tk.StringVar(
+            value="laptop" if default_use_laptop else "phone"
+        )
+        ttk.Radiobutton(
+            camera_frame,
+            text="📱 Phone Webcam (IP Webcam/DroidCam) - Default",
+            variable=self.camera_choice,
+            value="phone",
+        ).pack(anchor="w", pady=5)
+        ttk.Radiobutton(
+            camera_frame,
+            text="💻 Internal Laptop Camera",
+            variable=self.camera_choice,
+            value="laptop",
+        ).pack(anchor="w", pady=5)
+
+        # Input frame
+        input_frame = ttk.LabelFrame(
+            main_frame, text="Phone Webcam Configuration", padding="10"
+        )
+        input_frame.pack(fill="x", pady=(0, 20))
+
+        # IP address
+        ttk.Label(
+            input_frame, text=f"IP Address (from .env or default {default_ip}):"
+        ).pack(anchor="w", pady=(0, 5))
+        self.ip_entry = ttk.Entry(input_frame, width=40)
+        self.ip_entry.insert(0, default_ip)
+        self.ip_entry.pack(anchor="w", pady=(0, 15), fill="x")
+
+        # Port
+        ttk.Label(
+            input_frame, text=f"Port (from .env or default {default_port}):"
+        ).pack(anchor="w", pady=(0, 5))
+        self.port_entry = ttk.Entry(input_frame, width=40)
+        self.port_entry.insert(0, default_port)
+        self.port_entry.pack(anchor="w", pady=(0, 5), fill="x")
+
+        # Start button
+        ttk.Button(
+            main_frame, text="Start Video", command=self.validate_and_start
+        ).pack(pady=(10, 0))
+
+    def validate_and_start(self):
+        """Validate inputs and start the app."""
+        try:
+            ip = self.ip_entry.get().strip()
+            port = self.port_entry.get().strip()
+            camera = self.camera_choice.get()
+
+            # Validate IP format (basic check)
+            if camera == "phone":
+                if not ip:
+                    messagebox.showwarning(
+                        "Invalid Input", "IP address cannot be empty"
+                    )
+                    return
+
+                # Basic IP validation
+                parts = ip.split(".")
+                if len(parts) != 4:
+                    messagebox.showwarning(
+                        "Invalid IP Format",
+                        f"Invalid IP format: {ip}\nExpected format: XXX.XXX.XXX.XXX",
+                    )
+                    return
+
+                try:
+                    for part in parts:
+                        num = int(part)
+                        if num < 0 or num > 255:
+                            raise ValueError
+                except ValueError:
+                    messagebox.showwarning(
+                        "Invalid IP Format",
+                        f"Invalid IP format: {ip}\nEach part must be 0-255",
+                    )
+                    return
+
+            # Validate port
+            try:
+                port_num = int(port)
+                if port_num < 1 or port_num > 65535:
+                    raise ValueError
+            except ValueError:
+                messagebox.showwarning(
+                    "Invalid Port", f"Invalid port: {port}\nPort must be 1-65535"
+                )
+                return
+
+            # Store result and close
+            self.result = {
+                "ip": ip,
+                "port": port,
+                "use_laptop_cam": camera == "laptop",
+            }
+            self.root.destroy()
+
+        except Exception as e:
+            messagebox.showerror("Error", f"An error occurred: {e}")
+
+
 class VoucherScannerApp:
 
-    def __init__(self, root: tk.Tk, camera_source: str = CAMERA_SOURCE):
+    def __init__(self, root: tk.Tk, camera_source: str):
         self.root = root
         self.camera_source = camera_source  # Store for reconnection
         root.title(f"Voucher Scanner - {SCANNING_MODE}")
@@ -1136,6 +1283,10 @@ class VoucherScannerApp:
             return
 
         vis = self.frozen_frame.copy()
+
+        # Scale frame to fit display
+        vis = self._scale_frame_to_display(vis)
+
         h, w = vis.shape[:2]
         roi = self._compute_roi_rect(w, h)
 
@@ -1164,6 +1315,9 @@ class VoucherScannerApp:
 
         # Scale frame to half size
         frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
+
+        # Scale frame to fit display
+        frame = self._scale_frame_to_display(frame)
 
         # Draw overlay (no scanning)
         vis = frame.copy()
@@ -1712,7 +1866,9 @@ class VoucherScannerApp:
                 if site_name in self._shop_windows:
                     try:
                         driver.switch_to.window(self._shop_windows[site_name])
-                        driver.refresh()
+                        # Refresh only for REWE (which uses simulate_human)
+                        if site_name == "REWE":
+                            driver.refresh()
                     except Exception:
                         driver.execute_script("window.open('');")
                         driver.switch_to.window(driver.window_handles[-1])
@@ -1754,7 +1910,7 @@ class VoucherScannerApp:
                             f"⚠️ Could not switch to iframe: {e}", "orange"
                         )
 
-                # Fill card number with human-like typing
+                # Fill card number with human-like typing or fast typing
                 try:
                     field_card = wait.until(
                         EC.presence_of_element_located((By.CSS_SELECTOR, card_selector))
@@ -1764,19 +1920,28 @@ class VoucherScannerApp:
                     driver.execute_script(
                         "arguments[0].scrollIntoView(true);", field_card
                     )
-                    time.sleep(random.uniform(0.3, 0.6))
 
-                    # Human-like interaction
-                    human_move_and_click(driver, field_card)
-                    time.sleep(random.uniform(0.2, 0.5))
+                    simulate_human = shop_cfg.get("simulate_human", False)
+
+                    if simulate_human:
+                        time.sleep(random.uniform(0.3, 0.6))
+                        # Human-like interaction
+                        human_move_and_click(driver, field_card)
+                        time.sleep(random.uniform(0.2, 0.5))
+                    else:
+                        # Fast interaction for speed
+                        fast_click(driver, field_card)
 
                     try:
                         field_card.clear()
                     except Exception:
                         pass
 
-                    time.sleep(random.uniform(0.1, 0.3))
-                    human_typing(field_card, code_text)
+                    if simulate_human:
+                        time.sleep(random.uniform(0.1, 0.3))
+                        human_typing(field_card, code_text)
+                    else:
+                        fast_typing(field_card, code_text)
 
                     self._status_async(f"✓ Filled card number for {site_name}", "blue")
 
@@ -1787,7 +1952,10 @@ class VoucherScannerApp:
                 # Fill PIN if available
                 if pin_selector and pin_text:
                     try:
-                        time.sleep(random.uniform(0.5, 1.2))
+                        simulate_human = shop_cfg.get("simulate_human", False)
+
+                        if simulate_human:
+                            time.sleep(random.uniform(0.5, 1.2))
 
                         field_pin = wait.until(
                             EC.presence_of_element_located(
@@ -1799,18 +1967,25 @@ class VoucherScannerApp:
                         driver.execute_script(
                             "arguments[0].scrollIntoView(true);", field_pin
                         )
-                        time.sleep(random.uniform(0.2, 0.5))
 
-                        human_move_and_click(driver, field_pin)
-                        time.sleep(random.uniform(0.2, 0.5))
+                        if simulate_human:
+                            time.sleep(random.uniform(0.2, 0.5))
+                            human_move_and_click(driver, field_pin)
+                            time.sleep(random.uniform(0.2, 0.5))
+                        else:
+                            # Fast interaction for speed
+                            fast_click(driver, field_pin)
 
                         try:
                             field_pin.clear()
                         except Exception:
                             pass
 
-                        time.sleep(random.uniform(0.1, 0.3))
-                        human_typing(field_pin, pin_text)
+                        if simulate_human:
+                            time.sleep(random.uniform(0.1, 0.3))
+                            human_typing(field_pin, pin_text)
+                        else:
+                            fast_typing(field_pin, pin_text)
 
                         self._status_async(f"✓ Filled PIN for {site_name}", "blue")
 
@@ -1842,6 +2017,16 @@ class VoucherScannerApp:
         x0 = (w - roi_w) // 2
         y0 = (h - roi_h) // 2
         return x0, y0, x0 + roi_w, y0 + roi_h
+
+    def _scale_frame_to_display(self, frame):
+        """Scale frame to fit the label size (max 640x480 or window size)."""
+        h, w = frame.shape[:2]
+        # Scale to fit window width (approximately 640px max)
+        max_width = 640
+        if w > max_width:
+            scale = max_width / w
+            frame = cv2.resize(frame, (max_width, int(h * scale)))
+        return frame
 
     def _draw_scanner_overlay(self, img, roi, success=False):
         x0, y0, x1, y1 = roi
@@ -2098,6 +2283,10 @@ class VoucherScannerApp:
 
         self._draw_scanner_overlay(vis, roi, success=(bool(self._stable_code)))
         self._draw_boxes(vis, self.last_boxes, self.last_label)
+
+        # Scale frame to fit display
+        vis = self._scale_frame_to_display(vis)
+
         rgb = cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
         img = ImageTk.PhotoImage(Image.fromarray(rgb))
         self.label.configure(image=img)
@@ -2216,6 +2405,30 @@ class VoucherScannerApp:
 
 
 def main():
+    global IP_phone, PORT, LAPTOP_CAM, CAMERA_SOURCE, SCANNING_FLAG
+
+    # Show setup window
+    setup_root = tk.Tk()
+    setup_window = SetupWindow(setup_root)
+    setup_root.mainloop()
+
+    if setup_window.result is None:
+        print("Setup cancelled")
+        return
+
+    # Extract configuration from setup
+    IP_phone = setup_window.result["ip"]
+    PORT = setup_window.result["port"]
+    LAPTOP_CAM = setup_window.result["use_laptop_cam"]
+    SCANNING_FLAG = LAPTOP_CAM
+
+    # Set camera source
+    if LAPTOP_CAM:
+        CAMERA_SOURCE = "0"
+    else:
+        CAMERA_SOURCE = f"http://{IP_phone}:{PORT}/video"
+
+    # Create main app
     root = tk.Tk()
     app = VoucherScannerApp(root, camera_source=CAMERA_SOURCE)
     try:
