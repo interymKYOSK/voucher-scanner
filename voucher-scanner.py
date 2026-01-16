@@ -36,16 +36,17 @@ load_dotenv()
 
 # ---- Camera configuration ------------------------------------------------
 # Read from environment variables (can be set in .env file or system environment)
-IP_phone = os.getenv("IP_PHONE", "192.168.178.46")
+IP_phone = os.getenv("IP_PHONE", "192.168.1.102")
+PORT = os.getenv("PORT", "8080")
 LAPTOP_CAM = (
     os.getenv("LAPTOP_CAM", "False").lower() == "true"
 )  # Convert string to boolean
 SCANNING_FLAG = LAPTOP_CAM
 # TODO: make scanning possible for IP Webcam
-# SCANNING_MODE = os.getenv(
-#     "SCANNING_MODE", "Picture Mode"
-# )  # "Picture Mode" or "Live Auto-Scan"
-# SCANNING_FLAG = True if SCANNING_MODE == "Live Auto-Scan" else False
+SCANNING_MODE = os.getenv(
+    "SCANNING_MODE", "Picture Mode"
+)  # "Picture Mode" or "Live Auto-Scan"
+SCANNING_FLAG = True if SCANNING_MODE == "Live Auto-Scan" else False
 OCR_SWITCH = False  # Fallback for linear barcodes if pyzbar fails
 
 MAC = False  # Set to True if running on macOS, False for Linux
@@ -60,7 +61,9 @@ else:
     RES_PHONE_WIDTH = 640
     RES_PHONE_HEIGHT = 480
     if IP_phone:
-        CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", f"http://{IP_phone}:8080/video")
+        CAMERA_SOURCE = os.environ.get(
+            "CAMERA_SOURCE", f"http://{IP_phone}:{PORT}/video"
+        )
     else:
         print("ERROR: IP_PHONE environment variable not set. Set it in your .env file.")
         sys.exit(1)
@@ -214,13 +217,13 @@ SHOPS = {
         "emoji": "🍍",
         "simulate_human": False,
     },
-    "EDEKA": {
-        "url": "https://gutschein.avs.de/edeka-mh/home.htm",
-        "card_selector": '#postform > div > div:nth-child(5) > div > div > input[type="text"]:nth-child(1)',
-        "pin_selector": None,
-        "emoji": "🍎",
-        "simulate_human": False,
-    },
+    # "EDEKA": {
+    #     "url": "https://evci.pin-host.com/evci/#/saldo",
+    #     "card_selector": '#postform > div > div:nth-child(5) > div > div > input[type="text"]:nth-child(1)',
+    #     "pin_selector": None,
+    #     "emoji": "🍎",
+    #     "simulate_human": False,
+    # },
 }
 
 
@@ -760,7 +763,10 @@ class VoucherScannerApp:
             if shop == "REWE":
                 return (n == 13, ds, n)
             if shop == "DM":
-                return (n == 24, ds, n)
+                if n == 24:
+                    return (n == 24, ds, n)
+                if n == 52:
+                    return (n == 52, ds, n)
             if shop in ("ALDI", "LIDL"):
                 if n == 20:
                     return (True, ds, n)
@@ -892,6 +898,9 @@ class VoucherScannerApp:
             print(f"Error reading from camera: {e}")
             self._safe_status("❌ Camera read error", "red")
             return
+
+        # Scale frame to half size
+        frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
 
         # Store frozen frame
         self.frozen_frame = frame.copy()
@@ -1035,7 +1044,7 @@ class VoucherScannerApp:
                 candidates = []
                 if n == 13:
                     candidates = ["REWE"]
-                elif n == 24:
+                elif n == 24 or n == 52:
                     candidates = ["DM"]
                 elif n == 16:
                     candidates = ["EDEKA"]
@@ -1152,6 +1161,9 @@ class VoucherScannerApp:
         if not ok:
             self.root.after(30, self.update_live_video)
             return
+
+        # Scale frame to half size
+        frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
 
         # Draw overlay (no scanning)
         vis = frame.copy()
@@ -1915,6 +1927,9 @@ class VoucherScannerApp:
             self.root.after(20, self.update_frame)
             return
 
+        # Scale frame to half size
+        frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
+
         h, w = frame.shape[:2]
         roi = self._compute_roi_rect(w, h)
         x0, y0, x1, y1 = roi
@@ -2007,7 +2022,7 @@ class VoucherScannerApp:
                         candidates = []
                         if n == 13:
                             candidates = ["REWE"]
-                        elif n == 24:
+                        elif n == 24 or n == 52:
                             candidates = ["DM"]
                         elif n == 20 or n == 38:  # 38 gets trimmed to 20
                             candidates = ["ALDI", "LIDL"]
