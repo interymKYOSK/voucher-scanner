@@ -5,3 +5,5 @@ voucher-scanner copy.py
 voucher-scanner_mac copy.py
 voucher-scanner_mac.py
 
+decode_debug_images.py
+inspect_preprocessing.py
