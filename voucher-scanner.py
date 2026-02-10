@@ -52,6 +52,9 @@ MAC = False  # Set to True if running on macOS, False for Linux
 if platform.system() == "Darwin":  # macOS
     MAC = True
 
+# QR Code decoder - set to False to disable QR/Data Matrix decoding
+QR_DECODER_ENABLED = True
+
 RES_PHONE_WIDTH = 640
 RES_PHONE_HEIGHT = 480
 
@@ -131,6 +134,16 @@ except Exception as e:
     print("Install: conda install -c conda-forge pyzbar zbar")
     sys.exit(1)
 
+# ---- ZXing backend (preferred for robust decoding) -------------------------
+ZXING_AVAILABLE = False
+try:
+    import zxingcpp
+
+    ZXING_AVAILABLE = True
+except ImportError:
+    print("WARNING: zxingcpp not available (install: pip install zxing-cpp)")
+    ZXING_AVAILABLE = False
+
 
 # ---- Optional OCR backend ------------------------------------------------
 if OCR_SWITCH:
@@ -176,7 +189,7 @@ SYMBOLS = zbar_symbols(LINEAR_SYMBOL_NAMES + ["QRCODE", "PDF417"])
 SHOPS = {
     "REWE": {
         "url": "https://kartenwelt.rewe.de/rewe-geschenkkarte.html",
-        "card_selector": "#card_number",
+        "card_selector": "#card_number",  # //*[@id="card_number"]
         "pin_selector": "#pin",
         "emoji": "🛒",
         "simulate_human": True,
@@ -199,11 +212,19 @@ SHOPS = {
     "LIDL": {
         "url": "https://www.lidl.de/c/lidl-geschenkkarten/s10007775",
         "iframe_selector": 'iframe[src*="balance.php?cid=79"]',
-        "card_selector": ".cardnumberfield",
-        "pin_selector": ".pin",
+        "card_selector": ".AGiftyBalanceCheck__input-card-number > label:nth-child(1) > span:nth-child(1) > input:nth-child(1)",
+        "pin_selector": ".AGiftyBalanceCheck__input-pin > label:nth-child(1) > span:nth-child(1) > input:nth-child(1)",
         "emoji": "🍍",
         "simulate_human": False,
     },
+    # "LIDL": {
+    #     "url": "https://www.lidl.de/c/lidl-geschenkkarten/s10007775",
+    #     "iframe_selector": 'iframe[src*="balance.php?cid=79"]',
+    #     "card_selector": ".AGiftyBalanceCheck__input-card-number input",# //*[@id="13668127"]/form/div[1]/div[1]/label/span/input
+    #     "pin_selector": ".AGiftyBalanceCheck__input-pin input", # //*[@id="13668127"]/form/div[1]/div[2]/div/label/span/input
+    #     "emoji": "🍍",
+    #     "simulate_human": False,
+    # },
     # "EDEKA": {
     #     "url": "https://evci.pin-host.com/evci/#/saldo",
     #     "card_selector": '#postform > div > div:nth-child(5) > div > div > input[type="text"]:nth-child(1)',
@@ -242,8 +263,11 @@ except Exception:
 MIN_OCR_DIGITS = 10
 MAX_OCR_DIGITS = 24
 PIN_DIGITS = 4
+# Barcode mode ROI (rectangular)
 ROI_HEIGHT_FRAC = 0.35
 ROI_WIDTH_FRAC = 0.90
+# QR Code mode ROI (square, larger for better detection at full resolution)
+QR_ROI_SIZE_FRAC = 0.65  # 65% of the smaller dimension (square)
 CLAHE_CLIP = 2.0
 CLAHE_TILE = (8, 8)
 UNSHARP_AMOUNT = 1.4
@@ -522,6 +546,11 @@ class VoucherScannerApp:
         self.cap.set(cv2.CAP_PROP_FPS, 20)
         self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
 
+        # Verify actual camera resolution
+        actual_w = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        actual_h = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        print(f"[DEBUG] Camera resolution: {actual_w}x{actual_h}")
+
         # UI - Video display
         self.label = ttk.Label(root)
         self.label.grid(row=0, column=0, columnspan=7, padx=10, pady=5, sticky="nsew")
@@ -687,6 +716,16 @@ class VoucherScannerApp:
             self.take_picture_btn.pack(side="left", padx=2)
             self.take_picture_btn.state(["disabled"])
 
+        # QR Mode toggle button (next to Take Picture)
+        if QR_DECODER_ENABLED:
+            self.qr_mode_btn = ttk.Button(
+                take_frame,
+                text="📊 Barcode",
+                command=lambda: self._toggle_qr_mode(),
+                width=14,
+            )
+            self.qr_mode_btn.pack(side="left", padx=2)
+
         self.fill_selected_btn = ttk.Button(
             action_frame,
             text="Fill Selected",
@@ -763,6 +802,9 @@ class VoucherScannerApp:
         self._driver = None
         self._shop_windows = {}
 
+        # Scanning mode
+        self.qr_mode = False  # False = Barcode mode, True = QR code mode
+
         # Live scanning state (for SCANNING_FLAG mode)
         self._last_scan_t = 0.0
         self._potential_code = ""
@@ -783,6 +825,54 @@ class VoucherScannerApp:
             self.update_frame()
         else:
             self.update_live_video()
+
+    def _validate_and_correct_code(self, shop: str, digits: str) -> tuple:
+        """Validate and correct code digits for a specific shop.
+
+        Returns: (is_valid, corrected_digits, original_length)
+        """
+        n = len(digits)
+        if shop == "REWE":
+            if n == 13:
+                return (True, digits, n)
+            if n == 39:
+                # to get 13 first digits
+                corrected = digits[:13]
+                return (True, corrected, n)
+            return (False, digits, n)
+        if shop == "DM":
+            if n == 24:
+                return (True, digits, n)
+            if n == 32:
+                return (True, digits, n)
+            return (False, digits, n)
+        if shop in ("ALDI", "LIDL"):
+            if n == 20:
+                return (True, digits, n)
+            if n == 38:
+                # drop first 18 digits to get 20
+                corrected = digits[18:]
+                return (True, corrected, n)
+            if n == 36:
+                # drop first 18 digits to get 18
+                corrected = digits[18:]
+                return (True, corrected, n)
+            return (False, digits, n)
+        if shop == "EDEKA":
+            if n == 32:
+                corrected = digits[11:16] + digits[18:]
+                return (True, corrected, n)
+            return (n == 19, digits, n)
+        return (True, digits, n)
+
+    def _apply_code_correction(self, shop: str):
+        """Apply code correction for the given shop."""
+        code_raw = self.code.get() or ""
+        digits = "".join(ch for ch in code_raw if ch.isdigit())
+
+        ok, corrected, _ = self._validate_and_correct_code(shop, digits)
+        if ok and corrected != digits:
+            self.code.set(corrected)
 
     def _select_shop(self, name, button):
         """Mark a shop as selected. Visual toggle on the button."""
@@ -821,6 +911,25 @@ class VoucherScannerApp:
             except Exception:
                 pass
             self._safe_status(f"Selected shop: {name}", "blue")
+            # Apply code correction for this shop
+            self._apply_code_correction(name)
+
+    def _toggle_qr_mode(self):
+        """Toggle between 1D Barcode and 2D Code (QR/Data Matrix) detection modes."""
+        self.qr_mode = not self.qr_mode
+        mode_name = "2D Code (QR/DM)" if self.qr_mode else "Barcode (1D)"
+        mode_emoji = "📱" if self.qr_mode else "📊"
+
+        # Update button appearance
+        self.qr_mode_btn.config(text=f"{mode_emoji} {mode_name}")
+        self._flash_button(self.qr_mode_btn, ms=200)
+
+        # Update status
+        self._safe_status(f"Switched to {mode_name} Mode", "blue")
+
+        # Reset scan state
+        if SCANNING_FLAG:
+            self.reset_scan()
 
     def _set_button_style(self, button, style_type):
         """Set button style: 'normal', 'selected', or 'ambiguous'."""
@@ -905,31 +1014,9 @@ class VoucherScannerApp:
         code_raw = self.code.get() or ""
         digits = "".join(ch for ch in code_raw if ch.isdigit())
 
-        def _validate_for(shop, ds: str):
-            n = len(ds)
-            if shop == "REWE":
-                return (n == 13, ds, n)
-            if shop == "DM":
-                if n == 24:
-                    return (n == 24, ds, n)
-                if n == 52:
-                    return (n == 52, ds, n)
-            if shop in ("ALDI", "LIDL"):
-                if n == 20:
-                    return (True, ds, n)
-                if n == 38:
-                    # drop first 18 digits to get 20
-                    corrected = ds[18:]
-                    return (True, corrected, n)
-                return (False, ds, n)
-            if shop == "EDEKA":
-                if n == 32:
-                    corrected = ds[11:16] + ds[18:]
-                    return (True, corrected, n)
-                return (n == 19, ds, n)
-            return (MIN_OCR_DIGITS <= n <= MAX_OCR_DIGITS, ds, n)
-
-        ok, corrected_code, count = _validate_for(self.selected_shop, digits)
+        ok, corrected_code, count = self._validate_and_correct_code(
+            self.selected_shop, digits
+        )
         if not ok:
             messagebox.showwarning(
                 "Invalid code length",
@@ -1046,8 +1133,9 @@ class VoucherScannerApp:
             self._safe_status("❌ Camera read error", "red")
             return
 
-        # Scale frame to half size
-        frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
+        # Scale frame to half size for Barcode mode, keep full resolution for QR mode
+        if not self.qr_mode:
+            frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
 
         # Store frozen frame
         self.frozen_frame = frame.copy()
@@ -1149,13 +1237,19 @@ class VoucherScannerApp:
         # Try rotated if card not found
         if not card_info:
             crop_rot = cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)
-            decoded_rot = self._scan_barcodes_only(crop_rot)
-            if decoded_rot:
-                txt, sym, poly = decoded_rot[0]
-                H, W = crop_rot.shape[:2]
-                poly = np.array(poly, dtype=np.int32)
-                poly_back = np.stack([poly[:, 1], W - 1 - poly[:, 0]], axis=1)
-                card_info = (txt, sym, poly_back.tolist())
+            if self.qr_mode and QR_DECODER_ENABLED:
+                # Try QR code detection on rotated image
+                decoded_dict_rot = self._scan_1d_qr(crop_rot)
+                card_info = decoded_dict_rot.get("card")
+            else:
+                # Try barcode detection on rotated image
+                decoded_rot = self._scan_barcodes_only(crop_rot)
+                if decoded_rot:
+                    txt, sym, poly = decoded_rot[0]
+                    H, W = crop_rot.shape[:2]
+                    poly = np.array(poly, dtype=np.int32)
+                    poly_back = np.stack([poly[:, 1], W - 1 - poly[:, 0]], axis=1)
+                    card_info = (txt, sym, poly_back.tolist())
 
         # Update UI with results
         if card_info:
@@ -1189,13 +1283,13 @@ class VoucherScannerApp:
                 digits_only = "".join(ch for ch in txt if ch.isdigit())
                 n = len(digits_only)
                 candidates = []
-                if n == 13:
+                if n == 13 or n == 39:
                     candidates = ["REWE"]
-                elif n == 24 or n == 52:
+                elif n == 24 or n == 32:
                     candidates = ["DM"]
                 elif n == 16:
                     candidates = ["EDEKA"]
-                elif n == 20 or n == 38:
+                elif n == 20 or n == 36 or n == 38:
                     # ALDI and LIDL both accept 20 (or 38 -> drop first 18)
                     candidates = ["ALDI", "LIDL"]
                 if len(candidates) == 1:
@@ -1228,6 +1322,8 @@ class VoucherScannerApp:
                         )
                     except Exception:
                         pass
+                    # Apply code correction for auto-detected shop
+                    self._apply_code_correction(shop_to_select)
                 elif len(candidates) > 1:
                     # ambiguous ALDI/LIDL - require manual choice
                     # mark both ALDI and LIDL buttons as ambiguous (orange)
@@ -1313,8 +1409,9 @@ class VoucherScannerApp:
             self.root.after(30, self.update_live_video)
             return
 
-        # Scale frame to half size
-        frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
+        # Scale frame to half size for Barcode mode, keep full resolution for QR mode
+        if not self.qr_mode:
+            frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
 
         # Scale frame to fit display
         frame = self._scale_frame_to_display(frame)
@@ -1335,6 +1432,178 @@ class VoucherScannerApp:
 
     # ==================== Scanning Methods ====================
     def _scan_1d(self, bgr):
+        """Wrapper to call appropriate scan method based on mode."""
+        if self.qr_mode and QR_DECODER_ENABLED:
+            return self._scan_1d_qr(bgr)
+        else:
+            return self._scan_1d_barcode(bgr)
+
+    def _scan_1d_qr(self, bgr):
+        """2D barcode scanning: supports QR codes and Data Matrix.
+
+        Uses ZXing (primary), OpenCV QRCodeDetector, and pylibdmtx as fallback.
+        Saves all preprocessing steps to /tmp/qr_debug for inspection.
+        """
+        import os
+
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape
+
+        # DEBUG: Save crop for inspection
+        debug_dir = "/tmp/qr_debug"
+        os.makedirs(debug_dir, exist_ok=True)
+        cv2.imwrite(f"{debug_dir}/00_crop_original.png", bgr)
+        cv2.imwrite(f"{debug_dir}/01_gray.png", gray)
+        mean_brightness = gray.mean()
+        print(
+            f"[DEBUG] Saved crop to {debug_dir} | Shape: {gray.shape} | Mean brightness: {mean_brightness:.1f}"
+        )
+
+        # Upscale if too small for reliable QR detection
+        MIN_SIZE = 200
+        if w < MIN_SIZE or h < MIN_SIZE:
+            scale = max(MIN_SIZE / w, MIN_SIZE / h)
+            bgr = cv2.resize(bgr, (int(w * scale), int(h * scale)), cv2.INTER_CUBIC)
+            gray = cv2.resize(gray, (int(w * scale), int(h * scale)), cv2.INTER_CUBIC)
+            print(f"[UPSCALE] {w}x{h} -> {bgr.shape[1]}x{bgr.shape[0]}")
+
+        # METHOD 0: ZXing (most robust, try first on original)
+        if ZXING_AVAILABLE:
+            try:
+                print("[ZXing] Trying ZXing detector...")
+                res = zxingcpp.read_barcodes(bgr)
+                if res:
+                    r = res[0]
+                    text = r.text.strip() if hasattr(r, "text") else None
+                    format_name = r.format.name if hasattr(r, "format") else "UNKNOWN"
+                    if text and len(text) > 0:
+                        print(f"[ZXing SUCCESS] {format_name}: {text[:50]}")
+                        return {"card": (text, format_name, []), "pin": None}
+            except Exception as e:
+                print(f"[ZXing] Error: {type(e).__name__}")
+
+        def _try_decode(img, name=""):
+            """Try QR and Data Matrix decoding."""
+            cv2.imwrite(f"{debug_dir}/{name}.png", img)
+
+            # METHOD 1: OpenCV QR Code
+            try:
+                detector = cv2.QRCodeDetector()
+                data, points, _ = detector.detectAndDecode(img)
+
+                if data and len(data) > 0:
+                    print(f"[CV_QR SUCCESS] {name}: {data[:50]}")
+                    poly = (
+                        [(int(p[0]), int(p[1])) for p in points[0]]
+                        if points is not None and len(points) > 0
+                        else []
+                    )
+                    return (data.strip(), "QRCODE", poly)
+            except Exception:
+                pass
+
+            # METHOD 2: Data Matrix (pylibdmtx)
+            try:
+                from pylibdmtx.pylibdmtx import decode as dm_decode
+                from PIL import Image as PILImage
+
+                if len(img.shape) == 2:
+                    pil_img = PILImage.fromarray(img)
+                else:
+                    pil_img = PILImage.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+
+                results = dm_decode(pil_img)
+
+                if results and len(results) > 0:
+                    for r in results:
+                        txt = r.data.decode("utf-8", errors="replace").strip()
+                        if txt and len(txt) > 0:
+                            print(f"[DATA MATRIX SUCCESS] {name}: {txt[:50]}")
+                            rect = r.rect
+                            poly = [
+                                (rect.left, rect.top),
+                                (rect.left + rect.width, rect.top),
+                                (rect.left + rect.width, rect.top + rect.height),
+                                (rect.left, rect.top + rect.height),
+                            ]
+                            return (txt, "DATAMATRIX", poly)
+
+            except ImportError:
+                if not hasattr(_try_decode, "_warned_dmtx"):
+                    print(
+                        "[WARNING] pylibdmtx not installed - Data Matrix codes won't work"
+                    )
+                    _try_decode._warned_dmtx = True
+            except Exception as e:
+                pass
+
+            return None
+
+        # Try preprocessing variants
+        # 1) ORIGINAL GRAYSCALE
+        result = _try_decode(gray, "02_grayscale")
+        if result:
+            return {"card": result, "pin": None}
+
+        # 2) MEDIAN BLUR
+        median = cv2.medianBlur(gray, 3)
+        result = _try_decode(median, "03_median")
+        if result:
+            return {"card": result, "pin": None}
+
+        # 3) GENTLE CLAHE
+        clahe = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+        result = _try_decode(enhanced, "04_CLAHE")
+        if result:
+            return {"card": result, "pin": None}
+
+        # 4) BINARY OTSU THRESHOLD
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        result = _try_decode(binary, "05_binary")
+        if result:
+            return {"card": result, "pin": None}
+
+        # 5) ADAPTIVE GAUSSIAN THRESHOLD (handles variable lighting)
+        adaptive = cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2
+        )
+        result = _try_decode(adaptive, "06_adaptive")
+        if result:
+            return {"card": result, "pin": None}
+
+        # 6) MULTIPLE SCALES (upscaling for better QR resolution)
+        h, w = gray.shape
+        for scale in [1.5, 2.0]:
+            resized = cv2.resize(gray, (int(w * scale), int(h * scale)))
+            result = _try_decode(resized, f"07_scale_{scale}x")
+            if result:
+                return {"card": result, "pin": None}
+
+        # 7) MEDIAN + CLAHE COMBINATION (for difficult lighting)
+        median_enhanced = clahe.apply(median)
+        result = _try_decode(median_enhanced, "08_median_CLAHE")
+        if result:
+            return {"card": result, "pin": None}
+
+        # 8) ROTATIONS (QR codes might be sideways/upside-down)
+        for angle in [90, 180, 270]:
+            if angle == 90:
+                rotated = cv2.rotate(gray, cv2.ROTATE_90_CLOCKWISE)
+            elif angle == 180:
+                rotated = cv2.rotate(gray, cv2.ROTATE_180)
+            else:
+                rotated = cv2.rotate(gray, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+            result = _try_decode(rotated, f"09_rotation_{angle}")
+            if result:
+                return {"card": result, "pin": None}
+
+        print(f"[DEBUG] No QR codes found. Check images in {debug_dir}")
+        return {"card": None, "pin": None}
+
+    def _scan_1d_barcode(self, bgr):
+        """Optimized scanning for barcodes (with preprocessing)."""
         import cv2, numpy as np
         from pyzbar.pyzbar import decode
         import pytesseract
@@ -1342,26 +1611,23 @@ class VoucherScannerApp:
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
         # -----------------------
-        # 1) BARCODE first - Build preprocessing candidates
+        # 1) BARCODE - Build preprocessing candidates
         # -----------------------
-        clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP, tileGridSize=CLAHE_TILE)
-        enhanced = clahe.apply(gray)
-        blurred = cv2.GaussianBlur(enhanced, (0, 0), UNSHARP_SIGMA)
-        sharp = cv2.addWeighted(
-            enhanced, 1.0 + UNSHARP_AMOUNT, blurred, -UNSHARP_AMOUNT, 0
-        )
+        blurred = cv2.GaussianBlur(gray, (0, 0), 1.0)
+        enhanced = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+        sharp = cv2.addWeighted(enhanced, 1.0 + 1.4, blurred, -1.4, 0)
 
-        kx = max(3, MORPH_KERNEL_W | 1)
-        ky = max(1, MORPH_KERNEL_H | 1)
+        kx = max(3, 21 | 1)
+        ky = max(1, 3 | 1)
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kx, ky))
-        closed = cv2.morphologyEx(sharp, cv2.MORPH_CLOSE, kernel, iterations=MORPH_ITER)
+        closed = cv2.morphologyEx(sharp, cv2.MORPH_CLOSE, kernel, iterations=1)
 
         # Build candidate list
         candidates = []
         candidates.append(("gray", gray))
+        candidates.append(("enhanced", enhanced))
         candidates.append(("sharp", sharp))
         candidates.append(("closed", closed))
-        candidates.append(("enhanced", enhanced))
 
         # Binary thresholding variants
         _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -1377,7 +1643,7 @@ class VoucherScannerApp:
         )
         candidates.append(("adaptive", adaptive))
 
-        # FIRST PASS: Try all candidates normally
+        # FIRST PASS: Try all candidates normally (catches QR codes in binary)
         for name, img in candidates:
             results = decode(img, symbols=SYMBOLS)
             if results:
@@ -1409,7 +1675,7 @@ class VoucherScannerApp:
                     return {"card": (txt, r.type, poly), "pin": None}
 
         # -----------------------
-        # 2) OCR fallback for multi-line numeric ID
+        # 3) OCR fallback for multi-line numeric ID
         # -----------------------
         if OCR_SWITCH:
             h, w = gray.shape
@@ -1615,7 +1881,28 @@ class VoucherScannerApp:
 
         # Try Firefox first
         try:
+            from selenium.webdriver.firefox.service import Service
+            import os
+
             firefox_opts = webdriver.FirefoxOptions()
+
+            # Auto-detect Firefox binary location (Snap vs apt)
+            firefox_binary_paths = [
+                "/snap/firefox/current/usr/lib/firefox/firefox",  # Snap
+                "/usr/bin/firefox",  # apt/deb
+                "/usr/lib/firefox/firefox",  # Alternative apt location
+            ]
+
+            firefox_binary = None
+            for path in firefox_binary_paths:
+                if os.path.exists(path):
+                    firefox_binary = path
+                    print(f"[DEBUG] Found Firefox at: {path}")
+                    break
+
+            if firefox_binary:
+                firefox_opts.binary_location = firefox_binary
+
             # Anti-detection: hide webdriver
             firefox_opts.set_preference("dom.webdriver.enabled", False)
             firefox_opts.set_preference("media.peerconnection.enabled", False)
@@ -1647,7 +1934,27 @@ class VoucherScannerApp:
                 "extensions.activeThemeID", "firefox-compact-light@mozilla.org"
             )
 
-            self._driver = webdriver.Firefox(options=firefox_opts)
+            # Create service with explicit geckodriver path
+            geckodriver_paths = [
+                "/usr/local/bin/geckodriver",
+                "/usr/bin/geckodriver",
+            ]
+
+            geckodriver_path = None
+            for path in geckodriver_paths:
+                if os.path.exists(path):
+                    geckodriver_path = path
+                    print(f"[DEBUG] Found geckodriver at: {path}")
+                    break
+
+            if geckodriver_path:
+                firefox_service = Service(executable_path=geckodriver_path)
+                self._driver = webdriver.Firefox(
+                    service=firefox_service, options=firefox_opts
+                )
+            else:
+                # Fallback: let Selenium find geckodriver automatically
+                self._driver = webdriver.Firefox(options=firefox_opts)
 
             # Execute stealth script to hide Selenium detection
             self._driver.execute_script(
@@ -1658,11 +1965,12 @@ class VoucherScannerApp:
                 Object.defineProperty(navigator, 'plugins', {
                     get: () => [1, 2, 3, 4, 5]
                 });
-            """
+                """
             )
 
             self._status_async("✅ Started Firefox (anti-detection enabled)", "green")
             print("[DEBUG] Firefox driver created with anti-detection measures")
+
             # Open all shop tabs immediately after Firefox starts
             self._open_all_shop_tabs()
             try:
@@ -1670,8 +1978,12 @@ class VoucherScannerApp:
             except Exception:
                 pass
             return self._driver
+
         except Exception as e:
             print(f"Firefox failed: {e}")
+            import traceback
+
+            traceback.print_exc()
             self._driver = None
 
         # If Firefox failed, try Chrome fallbacks
@@ -2012,11 +2324,20 @@ class VoucherScannerApp:
     # ==================== Drawing Methods ====================
 
     def _compute_roi_rect(self, w, h):
-        roi_h = int(h * ROI_HEIGHT_FRAC)
-        roi_w = int(w * ROI_WIDTH_FRAC)
-        x0 = (w - roi_w) // 2
-        y0 = (h - roi_h) // 2
-        return x0, y0, x0 + roi_w, y0 + roi_h
+        """Compute ROI rectangle. Square for QR mode (larger), rectangular for barcode mode."""
+        if self.qr_mode:
+            # QR mode: use larger square ROI (75%) for better QR detection at full resolution
+            size = int(min(w, h) * QR_ROI_SIZE_FRAC)
+            x0 = (w - size) // 2
+            y0 = (h - size) // 2
+            return x0, y0, x0 + size, y0 + size
+        else:
+            # Barcode mode: use rectangular ROI
+            roi_h = int(h * ROI_HEIGHT_FRAC)
+            roi_w = int(w * ROI_WIDTH_FRAC)
+            x0 = (w - roi_w) // 2
+            y0 = (h - roi_h) // 2
+            return x0, y0, x0 + roi_w, y0 + roi_h
 
     def _scale_frame_to_display(self, frame):
         """Scale frame to fit the label size (max 640x480 or window size)."""
@@ -2112,8 +2433,9 @@ class VoucherScannerApp:
             self.root.after(20, self.update_frame)
             return
 
-        # Scale frame to half size
-        frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
+        # Scale frame to half size for Barcode mode, keep full resolution for QR mode
+        if not self.qr_mode:
+            frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
 
         h, w = frame.shape[:2]
         roi = self._compute_roi_rect(w, h)
@@ -2125,6 +2447,14 @@ class VoucherScannerApp:
             self._last_scan_t = now
             crop = frame[y0:y1, x0:x1]
 
+            # DEBUG: Check crop size
+            crop_h, crop_w = crop.shape[:2]
+            print(
+                f"[DEBUG] Crop size: {crop_w}x{crop_h} | ROI: ({x0},{y0})-({x1},{y1})"
+            )
+            if crop_w < 50 or crop_h < 50:
+                print(f"[WARNING] Crop too small for code detection!")
+
             decoded_dict = self._scan_1d(crop)
             card_info = decoded_dict.get("card")
             pin_info = decoded_dict.get("pin")
@@ -2132,13 +2462,19 @@ class VoucherScannerApp:
             # Rotated pass if *card* not found
             if not card_info:
                 crop_rot = cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)
-                decoded_rot = self._scan_barcodes_only(crop_rot)
-                if decoded_rot:
-                    txt, sym, poly = decoded_rot[0]
-                    H, W = crop_rot.shape[:2]
-                    poly = np.array(poly, dtype=np.int32)
-                    poly_back = np.stack([poly[:, 1], W - 1 - poly[:, 0]], axis=1)
-                    card_info = (txt, sym, poly_back.tolist())
+                if self.qr_mode and QR_DECODER_ENABLED:
+                    # Try QR code detection on rotated image
+                    decoded_dict_rot = self._scan_1d_qr(crop_rot)
+                    card_info = decoded_dict_rot.get("card")
+                else:
+                    # Try barcode detection on rotated image
+                    decoded_rot = self._scan_barcodes_only(crop_rot)
+                    if decoded_rot:
+                        txt, sym, poly = decoded_rot[0]
+                        H, W = crop_rot.shape[:2]
+                        poly = np.array(poly, dtype=np.int32)
+                        poly_back = np.stack([poly[:, 1], W - 1 - poly[:, 0]], axis=1)
+                        card_info = (txt, sym, poly_back.tolist())
 
             # --- *** STABILITY LOGIC *** ---
 
@@ -2188,6 +2524,8 @@ class VoucherScannerApp:
                 # Trim ALDI/LIDL 38-digit codes to 20 digits
                 if n == 38:
                     digits_only = digits_only[18:]  # Drop first 18 digits to get 20
+                if n == 36:
+                    digits_only = digits_only[14:]  # Drop first 14 digits to get 18
 
                 self.code.set(digits_only)
                 self.last_label = digits_only
@@ -2207,9 +2545,9 @@ class VoucherScannerApp:
                         candidates = []
                         if n == 13:
                             candidates = ["REWE"]
-                        elif n == 24 or n == 52:
+                        elif n == 24 or n == 32:
                             candidates = ["DM"]
-                        elif n == 20 or n == 38:  # 38 gets trimmed to 20
+                        elif n == 20 or n == 36 or n == 38:  # 38 gets trimmed to 20
                             candidates = ["ALDI", "LIDL"]
                         elif n == 16:
                             candidates = ["EDEKA"]
