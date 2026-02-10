@@ -1,5 +1,6 @@
 name: voucher-scanner
 channels:
+  - defaults
   - conda-forge
 dependencies:
   # Python version
