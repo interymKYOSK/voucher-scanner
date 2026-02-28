@@ -23,6 +23,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import messagebox, ttk
+import tkinter.font as tkfont
 import pytesseract
 from pytesseract import Output
 
@@ -33,6 +34,28 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()
+
+
+# ---- Font system (cross-platform) --------
+def _detect_font_family():
+    """Detect a safe font family available on this system."""
+    available_fonts = tkfont.families()
+    candidates = [
+        "Arial",
+        "Helvetica",
+        "DejaVu Sans",
+        "Liberation Sans",
+        "TkDefaultFont",
+    ]
+    for font in candidates:
+        if font in available_fonts:
+            return font
+    # Fallback to first available font
+    return available_fonts[0] if available_fonts else "TkDefaultFont"
+
+
+# Note: Font objects are created lazily in SetupWindow and VoucherScannerApp __init__
+# to ensure a Tk window exists before calling tkfont.families()
 
 # ---- Global configuration variables (will be set by setup window) --------
 IP_phone = os.getenv("IP_PHONE", "192.168.1.102")
@@ -191,14 +214,14 @@ SHOPS = {
         "url": "https://kartenwelt.rewe.de/rewe-geschenkkarte.html",
         "card_selector": "#card_number",  # //*[@id="card_number"]
         "pin_selector": "#pin",
-        "emoji": "🛒",
+        "emoji": "[REWE]",
         "simulate_human": True,
     },
     "DM": {
         "url": "https://www.dm.de/services/services-im-markt/geschenkkarten",
         "card_selector": "#credit-checker-printedCreditKey-input",
         "pin_selector": "#credit-checker-verificationCode-input",
-        "emoji": "🛍️",
+        "emoji": "[DM]",
         "simulate_human": False,
     },
     "ALDI": {
@@ -206,25 +229,17 @@ SHOPS = {
         "iframe_selector": 'iframe[src*="balancechecks"]',
         "card_selector": ".cardnumberfield",
         "pin_selector": ".pin",
-        "emoji": "🥫",
+        "emoji": "[ALDI]",
         "simulate_human": False,
     },
     "LIDL": {
         "url": "https://www.lidl.de/c/lidl-geschenkkarten/s10007775",
         "iframe_selector": 'iframe[src*="balance.php?cid=79"]',
-        "card_selector": ".AGiftyBalanceCheck__input-card-number > label:nth-child(1) > span:nth-child(1) > input:nth-child(1)",
-        "pin_selector": ".AGiftyBalanceCheck__input-pin > label:nth-child(1) > span:nth-child(1) > input:nth-child(1)",
-        "emoji": "🍍",
+        "card_selector": ".AGiftyBalanceCheck__input-card-number input",
+        "pin_selector": ".AGiftyBalanceCheck__input-pin input",
+        "emoji": "[LIDL]",
         "simulate_human": False,
     },
-    # "LIDL": {
-    #     "url": "https://www.lidl.de/c/lidl-geschenkkarten/s10007775",
-    #     "iframe_selector": 'iframe[src*="balance.php?cid=79"]',
-    #     "card_selector": ".AGiftyBalanceCheck__input-card-number input",# //*[@id="13668127"]/form/div[1]/div[1]/label/span/input
-    #     "pin_selector": ".AGiftyBalanceCheck__input-pin input", # //*[@id="13668127"]/form/div[1]/div[2]/div/label/span/input
-    #     "emoji": "🍍",
-    #     "simulate_human": False,
-    # },
     # "EDEKA": {
     #     "url": "https://evci.pin-host.com/evci/#/saldo",
     #     "card_selector": '#postform > div > div:nth-child(5) > div > div > input[type="text"]:nth-child(1)',
@@ -306,8 +321,12 @@ def fast_typing(element, text):
 
 
 def fast_click(driver, element):
-    """Click instantly without human-like delays (when simulate_human=False)."""
-    element.click()
+    """Click instantly without human-like delays (when simulate_human=False).
+    Falls back to JS click if an overlay intercepts the normal click."""
+    try:
+        element.click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", element)
 
 
 def simulate_human_behavior(driver):
@@ -378,35 +397,41 @@ class SetupWindow:
         self.root.geometry("600x600")
         self.result = None
 
+        # Initialize fonts (after Tk window exists)
+        ui_font_family = _detect_font_family()
+        self.font_label = tkfont.Font(family=ui_font_family, size=11)
+        self.font_bold = tkfont.Font(family=ui_font_family, size=11, weight="bold")
+        self.font_button = tkfont.Font(family=ui_font_family, size=12, weight="bold")
+        self.font_title = tkfont.Font(family=ui_font_family, size=13, weight="bold")
+        self.font_status = tkfont.Font(family=ui_font_family, size=11)
+
         # Main frame
         main_frame = ttk.Frame(root, padding="20")
         main_frame.pack(fill="both", expand=True)
 
         # Title
-        title = ttk.Label(
-            main_frame,
-            text="📱 Voucher Scanner Setup",
-            font=("Arial", 16, "bold"),
-        )
-        title.pack(pady=(0, 20))
 
         # Explanation
         explanation = tk.Text(
-            main_frame, height=8, width=70, wrap="word", relief="flat"
+            main_frame, height=16, width=80, wrap="word", relief="flat"
         )
         explanation.pack(pady=(0, 15), padx=5)
         explanation.insert(
             "1.0",
-            """📲 Instructions:
-
-Android: Download and start "IP Webcam" app
-→ Enable camera access and start the server
-
-iOS: Download and start "DroidCam" app
-→ Enable camera access and start the connection
-
+            """### Instructions ###:
 Make sure your laptop is in the same WiFi network as your phone.
-Enter the IP address shown in the app below.""",
+Enter the IP address shown in the app below.
+    → if you cannot connect, restart WLAN on both devices, your PC and your Phone
+Android: Download and start "IP Webcam" app
+    → Enable camera access and start the server
+iOS: Download and start "DroidCam" app
+    → Enable camera access and start the connection
+→ set Video resolution to min 1280x720 (in app settings - even higher resolution slows down the connection)
+
+Open REWE and LIDL in a seperate browser manually:
+https://kartenwelt.rewe.de/rewe-geschenkkarte.html
+https://www.lidl.de/c/lidl-geschenkkarten/s10007775
+""",
         )
         # Get defaults from environment
         default_ip = os.getenv("IP_PHONE", "192.168.1.184")
@@ -422,13 +447,13 @@ Enter the IP address shown in the app below.""",
         )
         ttk.Radiobutton(
             camera_frame,
-            text="📱 Phone Webcam (IP Webcam/DroidCam) - Default",
+            text="Phone Webcam (IP Webcam/DroidCam) - Default",
             variable=self.camera_choice,
             value="phone",
         ).pack(anchor="w", pady=5)
         ttk.Radiobutton(
             camera_frame,
-            text="💻 Internal Laptop Camera",
+            text="Internal Laptop Camera",
             variable=self.camera_choice,
             value="laptop",
         ).pack(anchor="w", pady=5)
@@ -524,16 +549,26 @@ class VoucherScannerApp:
     def __init__(self, root: tk.Tk, camera_source: str):
         self.root = root
         self.camera_source = camera_source  # Store for reconnection
+
+        # Initialize fonts (after Tk window exists)
+        ui_font_family = _detect_font_family()
+        self.font_label = tkfont.Font(family=ui_font_family, size=11)
+        self.font_bold = tkfont.Font(family=ui_font_family, size=11, weight="bold")
+        self.font_button = tkfont.Font(family=ui_font_family, size=12, weight="bold")
+        self.font_title = tkfont.Font(family=ui_font_family, size=13, weight="bold")
+        self.font_status = tkfont.Font(family=ui_font_family, size=11)
+
         root.title(f"Voucher Scanner - {SCANNING_MODE}")
-        geometry_width = round(RES_PHONE_WIDTH + RES_PHONE_WIDTH * 0.1)
-        geometry_height = round(RES_PHONE_HEIGHT + RES_PHONE_HEIGHT)
-        root.geometry(f"{geometry_width}x{geometry_height}")
+        root.resizable(True, True)
+        root.geometry("1100x700")
+        root.minsize(750, 500)
 
         # Camera setup
         self.cap = create_capture(camera_source)
         if not self.cap.isOpened():
             messagebox.showerror(
-                "Camera Error", "Could not open the camera. Check camera settings."
+                "Camera Error",
+                "Could not open the camera. If webcam App is running, reconnect WLAN on PC and Phone.",
             )
 
             root.destroy()
@@ -551,134 +586,79 @@ class VoucherScannerApp:
         actual_h = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
         print(f"[DEBUG] Camera resolution: {actual_w}x{actual_h}")
 
-        # UI - Video display
-        self.label = ttk.Label(root)
-        self.label.grid(row=0, column=0, columnspan=7, padx=10, pady=5, sticky="nsew")
+        # Configure grid for vertical responsive layout
+        root.columnconfigure(0, weight=1)  # Single column, full width
 
-        # Status label
+        # Row 0: Status label (full width)
+        # Row 1: Camera feed (expands vertically)
+        # Row 2: Controls panel (below camera)
+
+        # Status label at top (full width)
         self.status = ttk.Label(
-            root, text="📹 Live video - Ready to capture", foreground="blue", anchor="w"
+            root,
+            text="Live video - Ready to capture",
+            foreground="blue",
+            anchor="w",
+            font=self.font_status,
         )
-        self.status.grid(row=1, column=0, columnspan=7, sticky="we", padx=12, pady=5)
-        # prevent the status row from expanding vertically when long messages arrive
+        self.status.grid(row=0, column=0, sticky="ew", padx=12, pady=5)
         try:
-            root.grid_rowconfigure(1, minsize=24)
+            root.grid_rowconfigure(0, minsize=24)
         except Exception:
             pass
 
-        # Create scrollable canvas for controls
-        canvas = tk.Canvas(root, bg="white", highlightthickness=0)
-        canvas.grid(row=2, column=0, columnspan=7, sticky="nsew", padx=5, pady=5)
+        # Camera row (expands to fill available space)
+        root.grid_rowconfigure(1, weight=1)
 
-        scrollbar = ttk.Scrollbar(root, orient="vertical", command=canvas.yview)
-        scrollbar.grid(row=2, column=7, sticky="ns", padx=(0, 5), pady=5)
-        canvas.configure(yscrollcommand=scrollbar.set)
+        # ===== Camera Feed (top) =====
+        self.label = ttk.Label(root)
+        self.label.grid(row=1, column=0, padx=10, pady=5, sticky="nsew")
 
-        # Create main frame inside canvas
-        main_frame = ttk.Frame(canvas)
-        canvas.create_window((0, 0), window=main_frame, anchor="nw")
+        # ===== Controls Panel (below camera) =====
+        controls_panel = ttk.Frame(root)
+        controls_panel.grid(row=2, column=0, sticky="ew", padx=5, pady=5)
+        controls_panel.columnconfigure(
+            0, weight=1
+        )  # Make controls stretch horizontally
 
-        # Bind mousewheel for scrolling
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        control_row = 0
 
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        # --- Card Number and PIN Input ---
+        controls_frame = ttk.LabelFrame(controls_panel, text="")
+        controls_frame.grid(row=control_row, column=0, sticky="ew", padx=12, pady=5)
+        controls_frame.columnconfigure(1, weight=1)
+        control_row += 1
 
-        # Update scroll region
-        def _on_frame_configure(event=None):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-
-        main_frame.bind("<Configure>", _on_frame_configure)
-
-        # Configure grid weight for scrollable area
-        root.grid_rowconfigure(2, weight=1)
-
-        # Store for later access
-        self.main_frame = main_frame
-
-        # Controls frame
-        controls_frame = ttk.LabelFrame(main_frame, text="")
-        controls_frame.grid(row=0, column=0, columnspan=4, sticky="w", padx=12, pady=5)
-
-        ttk.Label(controls_frame, text="Card Number:").pack(side="left")
+        ttk.Label(controls_frame, text="Card Number:", font=self.font_label).grid(
+            row=0, column=0, sticky="w", padx=5, pady=2
+        )
         self.code = tk.StringVar()
-        # Wider entry for card number
-        ttk.Entry(controls_frame, textvariable=self.code, width=30).pack(
-            side="left", padx=(2, 12)
-        )
+        ttk.Entry(
+            controls_frame, textvariable=self.code, width=25, font=self.font_label
+        ).grid(row=0, column=1, sticky="ew", padx=5, pady=2)
 
-        ttk.Label(controls_frame, text="PIN:").pack(side="left")
+        ttk.Label(controls_frame, text="PIN:", font=self.font_label).grid(
+            row=1, column=0, sticky="w", padx=5, pady=2
+        )
         self.pin = tk.StringVar()
-        ttk.Entry(controls_frame, textvariable=self.pin, width=6).pack(
-            side="left", padx=(2, 12)
-        )
+        ttk.Entry(
+            controls_frame, textvariable=self.pin, width=6, font=self.font_label
+        ).grid(row=1, column=1, sticky="w", padx=5, pady=2)
 
-        # Start browser hint + button (shown in both SCANNING and picture mode)
+        # --- Start Browser ---
         start_hint = ttk.Label(
-            main_frame, text="Start browser first (open shop tabs if needed)"
+            controls_panel,
+            text="Start browser first (open shop tabs if needed)",
+            font=self.font_label,
         )
-        start_hint.grid(row=1, column=0, columnspan=4, sticky="w", padx=12, pady=(8, 0))
+        start_hint.grid(row=control_row, column=0, sticky="ew", padx=12, pady=(8, 0))
+        control_row += 1
 
-        start_frame = ttk.Frame(main_frame)
-        start_frame.grid(
-            row=2, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 6)
-        )
+        start_frame = ttk.Frame(controls_panel)
+        start_frame.grid(row=control_row, column=0, sticky="ew", padx=12, pady=(0, 6))
+        start_frame.columnconfigure(0, weight=1)
+        control_row += 1
 
-        # Take picture row - shown in picture mode (SCANNING_FLAG=False) and live mode (SCANNING_FLAG=True)
-        take_hint = ttk.Label(
-            main_frame, text="Take picture to freeze frame for scanning"
-        )
-        take_hint.grid(row=3, column=0, columnspan=4, sticky="w", padx=12, pady=(4, 0))
-        if SCANNING_FLAG:
-            take_hint.config(text="Take picture to restart detection")
-
-        take_frame = ttk.Frame(main_frame)
-        take_frame.grid(row=4, column=0, columnspan=4, sticky="w", padx=12, pady=(0, 6))
-
-        # Shop buttons hint
-        shop_hint = ttk.Label(
-            main_frame, text="Choose the Shop (choose ALDI or LIDL if ambiguous)"
-        )
-        shop_hint.grid(row=5, column=0, columnspan=4, sticky="w", padx=12, pady=(6, 0))
-
-        # Detected shop status label
-        self.detected_shop_label = ttk.Label(
-            main_frame, text="", foreground="green", font=("Helvetica", 12, "bold")
-        )
-        self.detected_shop_label.grid(
-            row=5, column=0, columnspan=4, sticky="w", padx=12, pady=(22, 2)
-        )
-
-        # Shop buttons frame
-        shop_frame = ttk.LabelFrame(main_frame, text="")
-        shop_frame.grid(row=6, column=0, columnspan=4, sticky="w", padx=12, pady=5)
-
-        # Action area hint
-        action_hint = ttk.Label(
-            main_frame,
-            text="After scan: press 'Fill Selected' to fill the selected shop",
-        )
-        action_hint.grid(
-            row=7, column=0, columnspan=4, sticky="w", padx=12, pady=(6, 0)
-        )
-
-        # Action buttons frame
-        action_frame = ttk.LabelFrame(main_frame, text="")
-        action_frame.grid(row=8, column=0, columnspan=4, sticky="w", padx=12, pady=5)
-
-        # Style for selected/pressed buttons
-        # Use tk.Button on macOS, ttk.Button on Linux
-        self._style = ttk.Style()
-        self._use_tk_buttons = MAC  # Use the MAC flag instead of platform detection
-        if not self._use_tk_buttons:
-            try:
-                self._style.configure("Selected.TButton", background="#b7ebc6")
-                self._style.configure("Pressed.TButton", background="#d6f0ff")
-                self._style.configure("Ambiguous.TButton", background="#ffd59e")
-            except Exception:
-                pass
-
-        # Action buttons (order will be added to action_frame; start button lives in start_frame)
         self.start_browser_btn = ttk.Button(
             start_frame,
             text="Start Browser",
@@ -686,9 +666,24 @@ class VoucherScannerApp:
                 self._flash_button(self.start_browser_btn),
                 self._manual_open_browser(),
             ),
-            width=20,
         )
-        self.start_browser_btn.pack(side="left", padx=2)
+        self.start_browser_btn.grid(row=0, column=0, sticky="ew", padx=2)
+
+        # --- Take Picture ---
+        take_hint = ttk.Label(
+            controls_panel,
+            text="Take picture to freeze frame for scanning",
+            font=self.font_label,
+        )
+        take_hint.grid(row=control_row, column=0, sticky="ew", padx=12, pady=(4, 0))
+        if SCANNING_FLAG:
+            take_hint.config(text="Take picture to restart detection")
+        control_row += 1
+
+        take_frame = ttk.Frame(controls_panel)
+        take_frame.grid(row=control_row, column=0, sticky="ew", padx=12, pady=(0, 6))
+        take_frame.columnconfigure(0, weight=1)
+        control_row += 1
 
         if not SCANNING_FLAG:
             # Picture mode: show Take Picture button
@@ -699,9 +694,8 @@ class VoucherScannerApp:
                     self._flash_button(self.take_picture_btn),
                     self._take_picture(),
                 ),
-                width=20,
             )
-            self.take_picture_btn.pack(side="left", padx=2)
+            self.take_picture_btn.grid(row=0, column=0, sticky="ew", padx=2)
         else:
             # Live mode: Take Picture button restarts detection
             self.take_picture_btn = ttk.Button(
@@ -711,21 +705,86 @@ class VoucherScannerApp:
                     self._flash_button(self.take_picture_btn),
                     self.reset_scan(),
                 ),
-                width=20,
             )
-            self.take_picture_btn.pack(side="left", padx=2)
+            self.take_picture_btn.grid(row=0, column=0, sticky="ew", padx=2)
             self.take_picture_btn.state(["disabled"])
 
-        # QR Mode toggle button (next to Take Picture)
+        # QR Mode toggle button (if enabled)
         if QR_DECODER_ENABLED:
             self.qr_mode_btn = ttk.Button(
                 take_frame,
-                text="📊 Barcode",
+                text="[1D] Barcode",
                 command=lambda: self._toggle_qr_mode(),
-                width=14,
             )
-            self.qr_mode_btn.pack(side="left", padx=2)
+            self.qr_mode_btn.grid(row=0, column=1, sticky="ew", padx=2)
+            take_frame.columnconfigure(1, weight=1)
 
+        # --- Shop Buttons ---
+        shop_hint = ttk.Label(
+            controls_panel,
+            text="Choose the Shop (choose ALDI or LIDL if ambiguous)",
+            font=self.font_label,
+        )
+        shop_hint.grid(row=control_row, column=0, sticky="ew", padx=12, pady=(6, 0))
+        control_row += 1
+
+        # Detected shop status label
+        self.detected_shop_label = ttk.Label(
+            controls_panel, text="", foreground="green", font=self.font_bold
+        )
+        self.detected_shop_label.grid(
+            row=control_row, column=0, sticky="ew", padx=12, pady=(0, 2)
+        )
+        control_row += 1
+
+        # Shop buttons frame
+        shop_frame = ttk.LabelFrame(controls_panel, text="")
+        shop_frame.grid(row=control_row, column=0, sticky="ew", padx=12, pady=5)
+        shop_frame.columnconfigure(0, weight=1)
+        control_row += 1
+
+        # --- Action Buttons ---
+        action_hint = ttk.Label(
+            controls_panel,
+            text="After scan: press 'Fill Selected' to fill the selected shop",
+            font=self.font_label,
+        )
+        action_hint.grid(row=control_row, column=0, sticky="ew", padx=12, pady=(6, 0))
+        control_row += 1
+
+        action_frame = ttk.LabelFrame(controls_panel, text="")
+        action_frame.grid(row=control_row, column=0, sticky="ew", padx=12, pady=5)
+        action_frame.columnconfigure(0, weight=1)
+        action_frame.columnconfigure(1, weight=1)
+        action_frame.columnconfigure(2, weight=1)
+        control_row += 1
+
+        # Style for selected/pressed buttons
+        # Use tk.Button on macOS, ttk.Button on Linux
+        self._style = ttk.Style()
+        self._use_tk_buttons = MAC  # Use the MAC flag instead of platform detection
+        if not self._use_tk_buttons:
+            # Configure fonts for ttk on Linux using font objects
+            try:
+                self._style.configure("TButton", font=self.font_button)
+                self._style.configure("TLabel", font=self.font_label)
+                self._style.configure("TLabelFrame", font=self.font_label)
+                self._style.configure("TRadiobutton", font=self.font_label)
+                self._style.configure("TEntry", font=self.font_label)
+                self._style.configure("TFrame", font=self.font_label)
+                self._style.configure(
+                    "Selected.TButton", background="#b7ebc6", font=self.font_button
+                )
+                self._style.configure(
+                    "Pressed.TButton", background="#d6f0ff", font=self.font_button
+                )
+                self._style.configure(
+                    "Ambiguous.TButton", background="#ffd59e", font=self.font_button
+                )
+            except Exception:
+                pass
+
+        # Action buttons (Fill Selected, Copy Card, Reset Camera)
         self.fill_selected_btn = ttk.Button(
             action_frame,
             text="Fill Selected",
@@ -733,9 +792,19 @@ class VoucherScannerApp:
                 self._flash_button(self.fill_selected_btn),
                 self._fill_selected_shop(),
             ),
-            width=14,
         )
-        self.fill_selected_btn.pack(side="left", padx=2)
+        self.fill_selected_btn.grid(row=0, column=0, sticky="ew", padx=2)
+
+        self.copy_card_btn = ttk.Button(
+            action_frame,
+            text="Copy Card #",
+            command=lambda: (
+                self._flash_button(self.copy_card_btn),
+                self._copy_card_number(),
+            ),
+            state="disabled",
+        )
+        self.copy_card_btn.grid(row=0, column=1, sticky="ew", padx=2)
 
         self.reset_camera_btn = ttk.Button(
             action_frame,
@@ -744,15 +813,17 @@ class VoucherScannerApp:
                 self._flash_button(self.reset_camera_btn),
                 self._reset_camera(),
             ),
-            width=14,
         )
-        self.reset_camera_btn.pack(side="left", padx=2)
+        self.reset_camera_btn.grid(row=0, column=2, sticky="ew", padx=2)
 
+        # --- Shop Buttons Creation ---
         self.shop_buttons = []
         self.shop_button_frames = {}  # Store frames for styling
 
+        shop_button_row = 0
         for name, config in SHOPS.items():
             text = f"{name}"
+            frame = None  # Initialize for later reference
             if self._use_tk_buttons:
                 # macOS: Use frame as background indicator + button inside
                 frame = tk.Frame(
@@ -765,25 +836,38 @@ class VoucherScannerApp:
                 btn = tk.Button(
                     frame,
                     text=text,
-                    width=10,
                     bg="#E8E8E8",
                     fg="black",
                     activebackground="#D0D0D0",
                     relief="flat",
                     bd=0,
                     state="disabled",
-                    font=("Helvetica", 11, "normal"),
+                    font=self.font_button,
                     padx=8,
                     pady=4,
                     highlightthickness=0,
                 )
-                btn.pack(padx=2, pady=2)
-                frame.pack(side="left", padx=2, pady=2)
+                btn.pack(fill="both", expand=True, padx=2, pady=2)
+                frame.grid(
+                    row=shop_button_row // 2,
+                    column=shop_button_row % 2,
+                    sticky="ew",
+                    padx=2,
+                    pady=2,
+                )
             else:
                 # Linux: Use ttk.Button
-                btn = ttk.Button(shop_frame, text=text, width=12, style="TButton")
-                btn.pack(side="left", padx=2)
+                btn = ttk.Button(shop_frame, text=text, style="TButton")
+                btn.grid(
+                    row=shop_button_row // 2,
+                    column=shop_button_row % 2,
+                    sticky="ew",
+                    padx=2,
+                    pady=2,
+                )
                 btn.state(["disabled"])
+
+            shop_button_row += 1
 
             btn._orig_text = text
             btn._shop_name = name
@@ -794,6 +878,13 @@ class VoucherScannerApp:
             if self._use_tk_buttons:
                 self.shop_button_frames[name] = (frame, btn)
 
+        # Configure shop buttons grid
+        shop_frame.columnconfigure(0, weight=1)
+        shop_frame.columnconfigure(1, weight=1)
+
+        # Store main_frame for compatibility (no longer used but kept for reference)
+        self.main_frame = controls_panel
+
         # State
         self.picture_mode = False  # Will be set to True only when actively frozen
         self.frozen_frame = None
@@ -801,6 +892,20 @@ class VoucherScannerApp:
         self.last_label = ""
         self._driver = None
         self._shop_windows = {}
+
+        # Trace card number changes to enable/disable copy button and shop buttons
+        def _on_code_change(*args):
+            has_code = bool(self.code.get().strip())
+            if has_code:
+                self._enable_button(self.copy_card_btn)
+                for btn in self.shop_buttons:
+                    self._enable_button(btn)
+            else:
+                self._disable_button(self.copy_card_btn)
+                for btn in self.shop_buttons:
+                    self._disable_button(btn)
+
+        self.code.trace_add("write", _on_code_change)
 
         # Scanning mode
         self.qr_mode = False  # False = Barcode mode, True = QR code mode
@@ -847,6 +952,8 @@ class VoucherScannerApp:
                 return (True, digits, n)
             return (False, digits, n)
         if shop in ("ALDI", "LIDL"):
+            if n == 18:
+                return (True, digits, n)
             if n == 20:
                 return (True, digits, n)
             if n == 38:
@@ -918,10 +1025,10 @@ class VoucherScannerApp:
         """Toggle between 1D Barcode and 2D Code (QR/Data Matrix) detection modes."""
         self.qr_mode = not self.qr_mode
         mode_name = "2D Code (QR/DM)" if self.qr_mode else "Barcode (1D)"
-        mode_emoji = "📱" if self.qr_mode else "📊"
+        mode_text = "[2D]" if self.qr_mode else "[1D]"
 
         # Update button appearance
-        self.qr_mode_btn.config(text=f"{mode_emoji} {mode_name}")
+        self.qr_mode_btn.config(text=f"{mode_text} {mode_name}")
         self._flash_button(self.qr_mode_btn, ms=200)
 
         # Update status
@@ -943,7 +1050,7 @@ class VoucherScannerApp:
                     highlightbackground="#009900",
                     highlightcolor="#009900",
                 )
-                button.config(bg="#00CC00", font=("Helvetica", 11, "bold"))
+                button.config(bg="#00CC00", font=self.font_button)
             elif style_type == "ambiguous":
                 # Orange for ambiguous (needs manual choice)
                 frame.config(
@@ -951,7 +1058,7 @@ class VoucherScannerApp:
                     highlightbackground="#CC6600",
                     highlightcolor="#CC6600",
                 )
-                button.config(bg="#FF9900", font=("Helvetica", 11, "bold"))
+                button.config(bg="#FF9900", font=self.font_button)
             else:  # normal
                 # Gray for normal/disabled
                 frame.config(
@@ -959,7 +1066,7 @@ class VoucherScannerApp:
                     highlightbackground="#999999",
                     highlightcolor="#999999",
                 )
-                button.config(bg="#E8E8E8", font=("Helvetica", 11, "normal"))
+                button.config(bg="#E8E8E8", font=self.font_button)
         else:
             # ttk styling for Linux/Windows
             if style_type == "selected":
@@ -983,6 +1090,22 @@ class VoucherScannerApp:
         else:
             button.state(["disabled"])
 
+    def _copy_card_number(self):
+        """Copy the card number to clipboard and show brief confirmation."""
+        card_num = self.code.get().strip()
+        if not card_num:
+            messagebox.showwarning("No card number", "No card number to copy.")
+            return
+
+        self.root.clipboard_clear()
+        self.root.clipboard_append(card_num)
+        self.root.update()  # Ensure clipboard is updated
+
+        # Change button text to confirmation and restore after 1.5 seconds
+        orig_text = self.copy_card_btn.cget("text")
+        self.copy_card_btn.config(text="[OK] Copied!")
+        self.root.after(1500, lambda: self.copy_card_btn.config(text=orig_text))
+
     def _flash_button(self, button, ms: int = 300):
         """Temporarily apply Pressed style to a button then revert."""
         try:
@@ -999,10 +1122,55 @@ class VoucherScannerApp:
         except Exception:
             pass
 
+    def _show_lidl_warning(self):
+        """Show LIDL warning dialog with copyable URL."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("LIDL not supported")
+        dialog.geometry("500x250")
+        dialog.resizable(False, False)
+
+        # Make dialog modal
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Message text
+        message_frame = ttk.Frame(dialog, padding="10")
+        message_frame.pack(fill="both", expand=False)
+
+        ttk.Label(
+            message_frame,
+            text="Please fill the card number manually. Copy the URL below and paste in your browser:",
+            justify="left",
+            font=self.font_label,
+        ).pack(anchor="w", fill="x", pady=(0, 10))
+
+        # URL frame with copyable text
+        url_frame = ttk.LabelFrame(
+            dialog, text="LIDL URL (click to select, Ctrl+C to copy)", padding="5"
+        )
+        url_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        url_text = tk.Text(
+            url_frame, height=2, width=60, wrap="word", font=self.font_label
+        )
+        url_text.pack(fill="both", expand=True)
+        url_text.insert("1.0", "https://www.lidl.de/c/lidl-geschenkkarten/s10007775")
+        url_text.config(state="disabled")  # Read-only but selectable
+
+        # OK button
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(fill="x", padx=10, pady=10)
+        ttk.Button(button_frame, text="OK", command=dialog.destroy, width=15).pack()
+
     def _fill_selected_shop(self):
         """Fill the selected shop's form in the browser using captured IDs."""
         if not getattr(self, "selected_shop", None):
             messagebox.showinfo("No shop selected", "Please select a shop first.")
+            return
+
+        # LIDL warning
+        if self.selected_shop == "LIDL":
+            self._show_lidl_warning()
             return
 
         cfg = SHOPS.get(self.selected_shop)
@@ -1058,7 +1226,7 @@ class VoucherScannerApp:
 
     def _reset_camera(self):
         """Reset/reconnect the camera connection."""
-        self._safe_status("🔌 Resetting camera...", "orange")
+        self._safe_status("[...] Resetting camera...", "orange")
         try:
             self.root.update()
         except Exception:
@@ -1084,7 +1252,7 @@ class VoucherScannerApp:
                     )
                 except Exception:
                     pass
-                self._safe_status("❌ Camera connection failed", "red")
+                self._safe_status("[ERR] Camera connection failed", "red")
                 return
 
             # Set camera properties again
@@ -1096,7 +1264,7 @@ class VoucherScannerApp:
             except Exception as e:
                 print(f"Warning: Could not set camera properties: {e}")
 
-            self._safe_status("✅ Camera reconnected - Ready to capture", "green")
+            self._safe_status("[OK] Camera reconnected - Ready to capture", "green")
 
             # For LAPTOP_CAM, also reset scanning state
             if LAPTOP_CAM:
@@ -1117,7 +1285,7 @@ class VoucherScannerApp:
                 messagebox.showerror("Camera Error", f"Failed to reset camera: {e}")
             except Exception:
                 pass
-            self._safe_status("❌ Camera reset failed", "red")
+            self._safe_status("[ERR] Camera reset failed", "red")
 
     # ==================== Picture Capture Methods ====================
 
@@ -1126,11 +1294,11 @@ class VoucherScannerApp:
         try:
             ok, frame = self.cap.read()
             if not ok:
-                self._safe_status("❌ Failed to capture picture", "red")
+                self._safe_status("[ERR] Failed to capture picture", "red")
                 return
         except Exception as e:
             print(f"Error reading from camera: {e}")
-            self._safe_status("❌ Camera read error", "red")
+            self._safe_status("[ERR] Camera read error", "red")
             return
 
         # Scale frame to half size for Barcode mode, keep full resolution for QR mode
@@ -1148,7 +1316,7 @@ class VoucherScannerApp:
         except Exception:
             pass
 
-        self._safe_status("⏳ Processing image...", "orange")
+        self._safe_status("[...] Processing image...", "orange")
 
         # Process the image asynchronously so the GUI remains responsive
         threading.Thread(target=self._process_frozen_frame, daemon=True).start()
@@ -1191,7 +1359,7 @@ class VoucherScannerApp:
             except Exception:
                 pass
 
-        self._safe_status("📹 Live video - Ready to capture", "blue")
+        self._safe_status("Live video - Ready to capture", "blue")
 
         # Resume live video
         self.update_live_video()
@@ -1213,7 +1381,7 @@ class VoucherScannerApp:
         except Exception:
             pass
 
-        self._safe_status("📹 Live video - Ready to capture", "blue")
+        self._safe_status("Live video - Ready to capture", "blue")
         try:
             self.update_live_video()
         except Exception:
@@ -1262,7 +1430,7 @@ class VoucherScannerApp:
                 poly_np[:, 1] += y0
                 self.last_boxes = [(poly_np, BOX_COLOR, f"{sym}")]
 
-            status_text = f"✅ Found {sym}: {txt}"
+            status_text = f"[OK] Found {sym}: {txt}"
 
             if pin_info:
                 pin_txt, _, _ = pin_info
@@ -1289,6 +1457,8 @@ class VoucherScannerApp:
                     candidates = ["DM"]
                 elif n == 16:
                     candidates = ["EDEKA"]
+                elif n == 18:
+                    candidates = ["LIDL"]
                 elif n == 20 or n == 36 or n == 38:
                     # ALDI and LIDL both accept 20 (or 38 -> drop first 18)
                     candidates = ["ALDI", "LIDL"]
@@ -1386,10 +1556,23 @@ class VoucherScannerApp:
         h, w = vis.shape[:2]
         roi = self._compute_roi_rect(w, h)
 
+        # Scale ROI coordinates if frame was scaled
+        if self._last_scale_factor != 1.0:
+            roi = tuple(int(c * self._last_scale_factor) for c in roi)
+
+        # Scale box coordinates if frame was scaled
+        scaled_boxes = []
+        if self._last_scale_factor != 1.0:
+            for box, color, label in self.last_boxes:
+                scaled_box = (box * self._last_scale_factor).astype(np.int32)
+                scaled_boxes.append((scaled_box, color, label))
+        else:
+            scaled_boxes = self.last_boxes
+
         # Draw overlays
         success = bool(self.code.get())
         self._draw_scanner_overlay(vis, roi, success=success)
-        self._draw_boxes(vis, self.last_boxes, self.last_label)
+        self._draw_boxes(vis, scaled_boxes, self.last_label)
 
         # Convert and display
         rgb = cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
@@ -1420,6 +1603,11 @@ class VoucherScannerApp:
         vis = frame.copy()
         h, w = vis.shape[:2]
         roi = self._compute_roi_rect(w, h)
+
+        # Scale ROI coordinates if frame was scaled
+        if self._last_scale_factor != 1.0:
+            roi = tuple(int(c * self._last_scale_factor) for c in roi)
+
         self._draw_scanner_overlay(vis, roi, success=False)
 
         # Display
@@ -2081,7 +2269,8 @@ class VoucherScannerApp:
 
         self._shop_windows = {}
         try:
-            shops_list = list(SHOPS.items())
+            # shops_list = list(SHOPS.items()) # TODO: remove when LIDL is fixed
+            shops_list = [(name, cfg) for name, cfg in SHOPS.items() if name != "LIDL"]
             print(f"[DEBUG] Opening {len(shops_list)} shop tabs...")
 
             # Load first shop in main window
@@ -2209,14 +2398,32 @@ class VoucherScannerApp:
                 # Switch to iframe if needed
                 if iframe_selector:
                     try:
+                        # Scroll down gradually to trigger lazy-loaded iframes (e.g. LIDL)
+                        for scroll_y in [300, 600, 900, 1200]:
+                            driver.execute_script(f"window.scrollTo(0, {scroll_y});")
+                            time.sleep(0.4)
                         iframe = wait.until(
-                            EC.presence_of_element_located(
+                            EC.visibility_of_element_located(
                                 (By.CSS_SELECTOR, iframe_selector)
                             )
                         )
+                        driver.execute_script(
+                            "arguments[0].scrollIntoView(true);", iframe
+                        )
+                        time.sleep(0.5)
                         driver.switch_to.frame(iframe)
                         switched_to_iframe = True
                         time.sleep(random.uniform(0.5, 1))
+                        # Dismiss any overlay inside the iframe (e.g. pca-the-messages cookie/consent banner)
+                        try:
+                            driver.execute_script(
+                                """
+                                var el = document.querySelector('pca-the-messages');
+                                if (el) el.remove();
+                            """
+                            )
+                        except Exception:
+                            pass
                     except Exception as e:
                         self._status_async(
                             f"⚠️ Could not switch to iframe: {e}", "orange"
@@ -2340,13 +2547,27 @@ class VoucherScannerApp:
             return x0, y0, x0 + roi_w, y0 + roi_h
 
     def _scale_frame_to_display(self, frame):
-        """Scale frame to fit the label size (max 640x480 or window size)."""
+        """Scale frame to fit the actual label widget width dynamically."""
         h, w = frame.shape[:2]
-        # Scale to fit window width (approximately 640px max)
-        max_width = 640
-        if w > max_width:
-            scale = max_width / w
-            frame = cv2.resize(frame, (max_width, int(h * scale)))
+
+        # Get actual label widget width (or use minimum)
+        try:
+            label_width = self.label.winfo_width()
+            if label_width <= 1:  # Widget not yet rendered
+                label_width = 640
+        except Exception:
+            label_width = 640
+
+        # Scale frame to fit label width
+        if w > label_width:
+            scale = label_width / w
+            new_w = label_width
+            new_h = int(h * scale)
+            frame = cv2.resize(frame, (new_w, new_h))
+            self._last_scale_factor = scale  # Store for coordinate scaling
+        else:
+            self._last_scale_factor = 1.0
+
         return frame
 
     def _draw_scanner_overlay(self, img, roi, success=False):
