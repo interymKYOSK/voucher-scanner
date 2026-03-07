@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 import tkinter as tk
 from tkinter import messagebox, ttk
 import tkinter.font as tkfont
@@ -41,10 +42,10 @@ def _detect_font_family():
     """Detect a safe font family available on this system."""
     available_fonts = tkfont.families()
     candidates = [
-        "Arial",
-        "Helvetica",
-        "DejaVu Sans",
-        "Liberation Sans",
+        "helvetica",
+        "times",
+        "clean",
+        "courier",
         "TkDefaultFont",
     ]
     for font in candidates:
@@ -279,8 +280,8 @@ MIN_OCR_DIGITS = 10
 MAX_OCR_DIGITS = 24
 PIN_DIGITS = 4
 # Barcode mode ROI (rectangular)
-ROI_HEIGHT_FRAC = 0.35
-ROI_WIDTH_FRAC = 0.90
+ROI_HEIGHT_FRAC = 0.42
+ROI_WIDTH_FRAC = 0.95
 # QR Code mode ROI (square, larger for better detection at full resolution)
 QR_ROI_SIZE_FRAC = 0.65  # 65% of the smaller dimension (square)
 CLAHE_CLIP = 2.0
@@ -399,11 +400,11 @@ class SetupWindow:
 
         # Initialize fonts (after Tk window exists)
         ui_font_family = _detect_font_family()
-        self.font_label = tkfont.Font(family=ui_font_family, size=11)
-        self.font_bold = tkfont.Font(family=ui_font_family, size=11, weight="bold")
-        self.font_button = tkfont.Font(family=ui_font_family, size=12, weight="bold")
-        self.font_title = tkfont.Font(family=ui_font_family, size=13, weight="bold")
-        self.font_status = tkfont.Font(family=ui_font_family, size=11)
+        self.font_label = tkfont.Font(family=ui_font_family, size=10)
+        self.font_bold = tkfont.Font(family=ui_font_family, size=10, weight="bold")
+        self.font_button = tkfont.Font(family=ui_font_family, size=11, weight="bold")
+        self.font_title = tkfont.Font(family=ui_font_family, size=11, weight="bold")
+        self.font_status = tkfont.Font(family=ui_font_family, size=10)
 
         # Main frame
         main_frame = ttk.Frame(root, padding="20")
@@ -552,16 +553,33 @@ class VoucherScannerApp:
 
         # Initialize fonts (after Tk window exists)
         ui_font_family = _detect_font_family()
-        self.font_label = tkfont.Font(family=ui_font_family, size=11)
-        self.font_bold = tkfont.Font(family=ui_font_family, size=11, weight="bold")
-        self.font_button = tkfont.Font(family=ui_font_family, size=12, weight="bold")
-        self.font_title = tkfont.Font(family=ui_font_family, size=13, weight="bold")
-        self.font_status = tkfont.Font(family=ui_font_family, size=11)
+        self.font_label = tkfont.Font(family=ui_font_family, size=9, weight="bold")
+        self.font_bold = tkfont.Font(family=ui_font_family, size=9, weight="bold")
+        self.font_button = tkfont.Font(family=ui_font_family, size=10, weight="bold")
+        self.font_title = tkfont.Font(family=ui_font_family, size=10, weight="bold")
+        self.font_status = tkfont.Font(family=ui_font_family, size=9, weight="bold")
+
+        # Get screen dimensions and position TK window in left quarter
+        root.update_idletasks()  # Ensure window info is available
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+
+        # Calculate left quarter dimensions
+        quarter_width = screen_width // 4
+        window_height = screen_height
 
         root.title(f"Voucher Scanner - {SCANNING_MODE}")
         root.resizable(True, True)
-        root.geometry("1100x700")
-        root.minsize(750, 500)
+        root.geometry(
+            f"{quarter_width}x{window_height}+0+0"
+        )  # Left quarter, full height
+        root.minsize(240, 300)
+
+        # Store screen dimensions for later use (browser positioning)
+        self.screen_width = screen_width
+        self.screen_height = screen_height
+        self.middle_third_x = quarter_width
+        self.middle_third_width = quarter_width
 
         # Camera setup
         self.cap = create_capture(camera_source)
@@ -1124,6 +1142,7 @@ class VoucherScannerApp:
 
     def _show_lidl_warning(self):
         """Show LIDL warning dialog with copyable URL."""
+        url = "https://www.lidl.de/c/lidl-geschenkkarten/s10007775"
         dialog = tk.Toplevel(self.root)
         dialog.title("LIDL not supported")
         dialog.geometry("500x250")
@@ -1139,9 +1158,10 @@ class VoucherScannerApp:
 
         ttk.Label(
             message_frame,
-            text="Please fill the card number manually. Copy the URL below and paste in your browser:",
+            text="LIDL's Friendly Captcha is blocking this code. The 'Open in Browser' will open another normal browser. Copy number on 'Copy Card' button. Later refresh window to paste another number",
             justify="left",
             font=self.font_label,
+            wraplength=450,
         ).pack(anchor="w", fill="x", pady=(0, 10))
 
         # URL frame with copyable text
@@ -1154,13 +1174,79 @@ class VoucherScannerApp:
             url_frame, height=2, width=60, wrap="word", font=self.font_label
         )
         url_text.pack(fill="both", expand=True)
-        url_text.insert("1.0", "https://www.lidl.de/c/lidl-geschenkkarten/s10007775")
+        url_text.insert("1.0", url)
         url_text.config(state="disabled")  # Read-only but selectable
 
-        # OK button
+        # Button frame with two buttons
         button_frame = ttk.Frame(dialog)
         button_frame.pack(fill="x", padx=10, pady=10)
-        ttk.Button(button_frame, text="OK", command=dialog.destroy, width=15).pack()
+
+        ttk.Button(
+            button_frame,
+            text="Open in Browser",
+            command=lambda: self._open_in_browser_right_third(url),
+            width=15,
+        ).pack(side="left", padx=5)
+
+        ttk.Button(button_frame, text="OK", command=dialog.destroy, width=15).pack(
+            side="left", padx=5
+        )
+
+    def _open_in_browser_right_third(self, url):
+        """Open URL in default browser."""
+        webbrowser.open(url)
+
+    def _show_rewe_warning(self):
+        """Show REWE warning dialog with copyable URL, mentioning slow Friendly Captcha."""
+        url = "https://kartenwelt.rewe.de/rewe-geschenkkarte.html"
+        dialog = tk.Toplevel(self.root)
+        dialog.title("REWE - Manual Entry Required")
+        dialog.geometry("500x300")
+        dialog.resizable(False, False)
+
+        # Make dialog modal
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Message text
+        message_frame = ttk.Frame(dialog, padding="10")
+        message_frame.pack(fill="both", expand=False)
+
+        ttk.Label(
+            message_frame,
+            text="REWE's Friendly Captcha is very slow. The 'Open in Browser' will open another normal browser. Copy number on 'Copy Card' button. Later refresh window to paste another number",
+            justify="left",
+            font=self.font_label,
+            wraplength=450,
+        ).pack(anchor="w", fill="x", pady=(0, 10))
+
+        # URL frame with copyable text
+        url_frame = ttk.LabelFrame(
+            dialog, text="REWE URL (click to select, Ctrl+C to copy)", padding="5"
+        )
+        url_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        url_text = tk.Text(
+            url_frame, height=2, width=60, wrap="word", font=self.font_label
+        )
+        url_text.pack(fill="both", expand=True)
+        url_text.insert("1.0", url)
+        url_text.config(state="disabled")  # Read-only but selectable
+
+        # Button frame with two buttons
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(fill="x", padx=10, pady=10)
+
+        ttk.Button(
+            button_frame,
+            text="Open in Browser",
+            command=lambda: webbrowser.open(url),
+            width=15,
+        ).pack(side="left", padx=5)
+
+        ttk.Button(button_frame, text="OK", command=dialog.destroy, width=15).pack(
+            side="left", padx=5
+        )
 
     def _fill_selected_shop(self):
         """Fill the selected shop's form in the browser using captured IDs."""
@@ -1171,6 +1257,11 @@ class VoucherScannerApp:
         # LIDL warning
         if self.selected_shop == "LIDL":
             self._show_lidl_warning()
+            return
+
+        # REWE warning (due to slow Friendly Captcha)
+        if self.selected_shop == "REWE":
+            self._show_rewe_warning()
             return
 
         cfg = SHOPS.get(self.selected_shop)
@@ -1550,13 +1641,14 @@ class VoucherScannerApp:
 
         vis = self.frozen_frame.copy()
 
+        # Compute ROI on ORIGINAL frame dimensions before scaling
+        h_orig, w_orig = vis.shape[:2]
+        roi = self._compute_roi_rect(w_orig, h_orig)
+
         # Scale frame to fit display
         vis = self._scale_frame_to_display(vis)
 
-        h, w = vis.shape[:2]
-        roi = self._compute_roi_rect(w, h)
-
-        # Scale ROI coordinates if frame was scaled
+        # Scale ROI coordinates if frame was scaled for display
         if self._last_scale_factor != 1.0:
             roi = tuple(int(c * self._last_scale_factor) for c in roi)
 
@@ -1596,18 +1688,19 @@ class VoucherScannerApp:
         if not self.qr_mode:
             frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
 
+        # Compute ROI on ORIGINAL frame dimensions before scaling
+        h_orig, w_orig = frame.shape[:2]
+        roi = self._compute_roi_rect(w_orig, h_orig)
+
         # Scale frame to fit display
         frame = self._scale_frame_to_display(frame)
 
-        # Draw overlay (no scanning)
-        vis = frame.copy()
-        h, w = vis.shape[:2]
-        roi = self._compute_roi_rect(w, h)
-
-        # Scale ROI coordinates if frame was scaled
+        # Scale ROI coordinates if frame was scaled for display
         if self._last_scale_factor != 1.0:
             roi = tuple(int(c * self._last_scale_factor) for c in roi)
 
+        # Draw overlay (no scanning)
+        vis = frame.copy()
         self._draw_scanner_overlay(vis, roi, success=False)
 
         # Display
@@ -1630,22 +1723,9 @@ class VoucherScannerApp:
         """2D barcode scanning: supports QR codes and Data Matrix.
 
         Uses ZXing (primary), OpenCV QRCodeDetector, and pylibdmtx as fallback.
-        Saves all preprocessing steps to /tmp/qr_debug for inspection.
         """
-        import os
-
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
         h, w = gray.shape
-
-        # DEBUG: Save crop for inspection
-        debug_dir = "/tmp/qr_debug"
-        os.makedirs(debug_dir, exist_ok=True)
-        cv2.imwrite(f"{debug_dir}/00_crop_original.png", bgr)
-        cv2.imwrite(f"{debug_dir}/01_gray.png", gray)
-        mean_brightness = gray.mean()
-        print(
-            f"[DEBUG] Saved crop to {debug_dir} | Shape: {gray.shape} | Mean brightness: {mean_brightness:.1f}"
-        )
 
         # Upscale if too small for reliable QR detection
         MIN_SIZE = 200
@@ -1672,8 +1752,6 @@ class VoucherScannerApp:
 
         def _try_decode(img, name=""):
             """Try QR and Data Matrix decoding."""
-            cv2.imwrite(f"{debug_dir}/{name}.png", img)
-
             # METHOD 1: OpenCV QR Code
             try:
                 detector = cv2.QRCodeDetector()
@@ -2144,6 +2222,15 @@ class VoucherScannerApp:
                 # Fallback: let Selenium find geckodriver automatically
                 self._driver = webdriver.Firefox(options=firefox_opts)
 
+            # Set window width to one third of screen
+            import time
+
+            time.sleep(0.5)
+            self._driver.set_window_size(
+                self.middle_third_width, self._driver.get_window_size()["height"]
+            )
+            print(f"[DEBUG] Firefox window width set to: {self.middle_third_width}")
+
             # Execute stealth script to hide Selenium detection
             self._driver.execute_script(
                 """
@@ -2182,6 +2269,17 @@ class VoucherScannerApp:
                 options.add_argument("--disable-blink-features=AutomationControlled")
                 options.add_argument("--start-maximized")
                 self._driver = uc.Chrome(options=options, version_main=None)
+
+                # Set window width to one third of screen
+                import time
+
+                time.sleep(0.5)
+                self._driver.set_window_size(
+                    self.middle_third_width, self._driver.get_window_size()["height"]
+                )
+                print(
+                    f"[DEBUG] Undetected Chrome window width set to: {self.middle_third_width}"
+                )
                 self._status_async(
                     "✅ Started undetected Chrome (anti-detection enabled)", "green"
                 )
@@ -2219,6 +2317,15 @@ class VoucherScannerApp:
                 )
 
                 self._driver = webdriver.Chrome(options=chrome_opts)
+
+                # Set window width to one third of screen
+                import time
+
+                time.sleep(0.5)
+                self._driver.set_window_size(
+                    self.middle_third_width, self._driver.get_window_size()["height"]
+                )
+                print(f"[DEBUG] Chrome window width set to: {self.middle_third_width}")
 
                 # Remove webdriver property
                 self._driver.execute_cdp_cmd(
@@ -2269,8 +2376,12 @@ class VoucherScannerApp:
 
         self._shop_windows = {}
         try:
-            # shops_list = list(SHOPS.items()) # TODO: remove when LIDL is fixed
-            shops_list = [(name, cfg) for name, cfg in SHOPS.items() if name != "LIDL"]
+            # Exclude LIDL and REWE (require manual handling)
+            shops_list = [
+                (name, cfg)
+                for name, cfg in SHOPS.items()
+                if name not in ("LIDL", "REWE")
+            ]
             print(f"[DEBUG] Opening {len(shops_list)} shop tabs...")
 
             # Load first shop in main window
@@ -2382,16 +2493,20 @@ class VoucherScannerApp:
                     self._shop_windows[site_name] = driver.current_window_handle
 
                 # Simulate human behavior only for shops that need it (e.g., REWE)
-                time.sleep(random.uniform(1.5, 3))
                 shop_cfg = SHOPS.get(site_name, {})
+                # DM doesn't need delays, other shops might need human-like delays
                 if shop_cfg.get("simulate_human", False):
+                    time.sleep(random.uniform(1.5, 3))
                     simulate_human_behavior(driver)
+                else:
+                    time.sleep(0.5)  # Brief delay for page load
 
-                # Wait for potential CAPTCHA (but don't block if none present)
-                try:
-                    wait_for_captcha(driver, timeout=10)
-                except Exception:
-                    pass
+                # Wait for potential CAPTCHA only for shops that need it (skip for DM)
+                if site_name != "DM":
+                    try:
+                        wait_for_captcha(driver, timeout=10)
+                    except Exception:
+                        pass
 
                 wait = WebDriverWait(driver, 30)
 
@@ -2547,21 +2662,31 @@ class VoucherScannerApp:
             return x0, y0, x0 + roi_w, y0 + roi_h
 
     def _scale_frame_to_display(self, frame):
-        """Scale frame to fit the actual label widget width dynamically."""
+        """Scale frame to fit the actual label widget dimensions (both width and height)."""
         h, w = frame.shape[:2]
 
-        # Get actual label widget width (or use minimum)
+        # Get actual label widget dimensions (or use minimums)
         try:
             label_width = self.label.winfo_width()
+            label_height = self.label.winfo_height()
             if label_width <= 1:  # Widget not yet rendered
-                label_width = 640
+                label_width = 420
+            if label_height <= 1:
+                label_height = 400
         except Exception:
-            label_width = 640
+            label_width = 420
+            label_height = 400
 
-        # Scale frame to fit label width
-        if w > label_width:
-            scale = label_width / w
-            new_w = label_width
+        # Calculate scale factors for both dimensions
+        scale_w = label_width / w if w > label_width else 1.0
+        scale_h = label_height / h if h > label_height else 1.0
+
+        # Use the smaller scale factor to fit both dimensions
+        scale = min(scale_w, scale_h)
+
+        # Only resize if scaling down is needed
+        if scale < 1.0:
+            new_w = int(w * scale)
             new_h = int(h * scale)
             frame = cv2.resize(frame, (new_w, new_h))
             self._last_scale_factor = scale  # Store for coordinate scaling
