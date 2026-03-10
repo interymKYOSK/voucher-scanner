@@ -61,15 +61,18 @@ def _detect_font_family():
 # ---- Global configuration variables (will be set by setup window) --------
 IP_phone = os.getenv("IP_PHONE", "192.168.1.102")
 PORT = os.getenv("PORT", "8080")
-LAPTOP_CAM = (
-    os.getenv("LAPTOP_CAM", "False").lower() == "true"
-)  # Convert string to boolean
-SCANNING_FLAG = LAPTOP_CAM
+# Camera mode: "laptop" (0), "usb" (2), or "ip" (phone webcam URL)
+CAMERA_MODE = os.getenv("CAMERA_MODE", "ip")  # Default to IP webcam
+SCANNING_FLAG = False  # Will be set based on camera mode
 # TODO: make scanning possible for IP Webcam
 SCANNING_MODE = os.getenv(
     "SCANNING_MODE", "Picture Mode"
 )  # "Picture Mode" or "Live Auto-Scan"
-SCANNING_FLAG = True if SCANNING_MODE == "Live Auto-Scan" else False
+# For USB mode, force picture mode; otherwise use SCANNING_MODE
+if CAMERA_MODE == "usb":
+    SCANNING_FLAG = False  # USB always uses picture mode
+else:
+    SCANNING_FLAG = True if SCANNING_MODE == "Live Auto-Scan" else False
 OCR_SWITCH = False  # Fallback for linear barcodes if pyzbar fails
 
 MAC = False  # Set to True if running on macOS, False for Linux
@@ -79,8 +82,17 @@ if platform.system() == "Darwin":  # macOS
 # QR Code decoder - set to False to disable QR/Data Matrix decoding
 QR_DECODER_ENABLED = True
 
-RES_PHONE_WIDTH = 640
-RES_PHONE_HEIGHT = 480
+# Resolution preferences in order of preference (try highest first, fall back to lower)
+SUPPORTED_RESOLUTIONS = [
+    (1920, 1080),  # Full HD
+    (1280, 720),  # HD (most USB cameras support this)
+    (1024, 768),  # XGA (fallback for older USB cameras)
+    (800, 600),  # SVGA (last resort)
+    (640, 480),  # VGA (minimum acceptable)
+]
+
+RES_PHONE_WIDTH = 1920
+RES_PHONE_HEIGHT = 1080
 
 
 def create_capture(source: str) -> cv2.VideoCapture:
@@ -90,6 +102,133 @@ def create_capture(source: str) -> cv2.VideoCapture:
         return cv2.VideoCapture(idx)
     except ValueError:
         return cv2.VideoCapture(source)
+
+
+def find_best_camera_device(base_index: int = 0) -> int:
+    """
+    On Linux, try to find the best camera device among /dev/video* entries.
+    Tests resolution capabilities to find the one with highest quality.
+    Returns the index of the best camera device.
+    """
+    import platform
+    import time
+
+    if platform.system() != "Linux":
+        return base_index
+
+    best_index = base_index
+    best_resolution = (0, 0)
+
+    # Try indices around the base (e.g., if base_index is 2, try 2, 3, 4, 5, 6)
+    for idx in range(base_index, base_index + 8):
+        try:
+            test_cap = cv2.VideoCapture(idx)
+            if not test_cap.isOpened():
+                continue
+
+            # Give camera time to initialize
+            time.sleep(0.5)
+
+            # Try multiple resolutions to find capability
+            # Start with highest and work down
+            test_resolutions = [(1920, 1080), (1280, 720), (1024, 768), (800, 600)]
+
+            for test_w, test_h in test_resolutions:
+                test_cap.set(cv2.CAP_PROP_FRAME_WIDTH, test_w)
+                test_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, test_h)
+                time.sleep(0.2)
+
+                # Try to read a frame
+                ret, frame = test_cap.read()
+                if ret:
+                    h, w = frame.shape[:2]
+                    print(
+                        f"[DEBUG] Camera {idx} (/dev/video{idx}) - requested {test_w}x{test_h}, got {w}x{h}"
+                    )
+
+                    # If we got a high resolution, prefer this camera
+                    if w * h > best_resolution[0] * best_resolution[1]:
+                        best_resolution = (w, h)
+                        best_index = idx
+
+                    # If we got Full HD or higher, stop testing other resolutions
+                    if w >= 1280 or h >= 720:
+                        break
+
+            test_cap.release()
+
+            # If we found a good camera (at least HD), don't test further
+            if best_resolution[0] >= 1280:
+                break
+
+        except Exception as e:
+            pass
+
+    if best_resolution != (0, 0):
+        print(
+            f"[DEBUG] Selected camera index {best_index} with resolution {best_resolution[0]}x{best_resolution[1]}"
+        )
+    else:
+        print(f"[DEBUG] No suitable camera found, using default index {base_index}")
+
+    return best_index
+
+
+def set_optimal_resolution(cap: cv2.VideoCapture) -> tuple:
+    """
+    Set the camera to best supported resolution.
+    For Logitech C270: tries 1280x960, 1280x720, 1024x768, 800x600, 640x480
+    Returns (width, height) tuple of the actual resolution achieved.
+    """
+    import time
+
+    # Allow camera to initialize
+    print("[DEBUG] Initializing camera...")
+    time.sleep(1)
+
+    # Read a few frames to warm up
+    for _ in range(3):
+        cap.read()
+
+    # Try to set good resolutions (Logitech C270 supports 1280x960)
+    resolutions_to_try = [
+        (1280, 960),  # Logitech C270 native
+        (1280, 720),  # HD
+        (1024, 768),  # XGA
+        (800, 600),  # SVGA
+        (640, 480),  # VGA default
+    ]
+
+    for width, height in resolutions_to_try:
+        print(f"[DEBUG] Trying to set resolution {width}x{height}...")
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+
+        time.sleep(0.3)
+
+        # Read frame and check actual resolution
+        ret, frame = cap.read()
+        if ret:
+            actual_h, actual_w = frame.shape[:2]
+            print(f"[DEBUG] Requested {width}x{height}, got {actual_w}x{actual_h}")
+
+            # If we got it or close to it, accept it
+            if abs(actual_w - width) <= 5 and abs(actual_h - height) <= 5:
+                print(f"[DEBUG] ✓ Resolution set to {actual_w}x{actual_h}")
+                return (actual_w, actual_h)
+
+    # Fallback: use whatever the camera is currently set to
+    ret, frame = cap.read()
+    if ret:
+        actual_h, actual_w = frame.shape[:2]
+        print(f"[DEBUG] Using default resolution: {actual_w}x{actual_h}")
+        return (actual_w, actual_h)
+
+    # Last resort
+    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"[DEBUG] Fallback resolution: {actual_w}x{actual_h}")
+    return (actual_w, actual_h)
 
 
 # ---- Beep on success -----------------------------------------------------
@@ -437,26 +576,30 @@ https://www.lidl.de/c/lidl-geschenkkarten/s10007775
         # Get defaults from environment
         default_ip = os.getenv("IP_PHONE", "192.168.1.184")
         default_port = os.getenv("PORT", "8080")
-        default_use_laptop = os.getenv("LAPTOP_CAM", "False").lower() == "true"
+        default_camera_mode = os.getenv("CAMERA_MODE", "ip")
 
         # Camera choice frame
         camera_frame = ttk.LabelFrame(main_frame, text="Camera Selection", padding="10")
         camera_frame.pack(fill="x", pady=(0, 20))
 
-        self.camera_choice = tk.StringVar(
-            value="laptop" if default_use_laptop else "phone"
-        )
+        self.camera_choice = tk.StringVar(value=default_camera_mode)
         ttk.Radiobutton(
             camera_frame,
             text="Phone Webcam (IP Webcam/DroidCam) - Default",
             variable=self.camera_choice,
-            value="phone",
+            value="ip",
         ).pack(anchor="w", pady=5)
         ttk.Radiobutton(
             camera_frame,
             text="Internal Laptop Camera",
             variable=self.camera_choice,
             value="laptop",
+        ).pack(anchor="w", pady=5)
+        ttk.Radiobutton(
+            camera_frame,
+            text="USB Webcam",
+            variable=self.camera_choice,
+            value="usb",
         ).pack(anchor="w", pady=5)
 
         # Input frame
@@ -494,7 +637,7 @@ https://www.lidl.de/c/lidl-geschenkkarten/s10007775
             camera = self.camera_choice.get()
 
             # Validate IP format (basic check)
-            if camera == "phone":
+            if camera == "ip":
                 if not ip:
                     messagebox.showwarning(
                         "Invalid Input", "IP address cannot be empty"
@@ -537,7 +680,7 @@ https://www.lidl.de/c/lidl-geschenkkarten/s10007775
             self.result = {
                 "ip": ip,
                 "port": port,
-                "use_laptop_cam": camera == "laptop",
+                "camera_mode": camera,  # "ip", "laptop", or "usb"
             }
             self.root.destroy()
 
@@ -594,15 +737,27 @@ class VoucherScannerApp:
             sys.exit(1)
 
         # Camera hints
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, RES_PHONE_WIDTH)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, RES_PHONE_HEIGHT)
-        self.cap.set(cv2.CAP_PROP_FPS, 20)
-        self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+        # Use smart resolution detection - try to set optimal resolution
+        actual_w, actual_h = set_optimal_resolution(self.cap)
 
-        # Verify actual camera resolution
-        actual_w = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-        actual_h = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-        print(f"[DEBUG] Camera resolution: {actual_w}x{actual_h}")
+        # Store the actual resolution for later use
+        self.actual_width = actual_w
+        self.actual_height = actual_h
+
+        # Set FPS and autofocus
+        self.cap.set(cv2.CAP_PROP_FPS, 20)
+        # Autofocus settings for better focus performance
+        self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+        # Reduce buffer size for lower latency
+        try:
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        except Exception:
+            pass  # Not all cameras support buffer size setting
+
+        # Try to enable autofocus via V4L2 on Linux
+        self._enable_v4l2_autofocus(camera_source)
+
+        print(f"[DEBUG] Final camera resolution: {actual_w}x{actual_h}")
 
         # Configure grid for vertical responsive layout
         root.columnconfigure(0, weight=1)  # Single column, full width
@@ -1315,6 +1470,96 @@ class VoucherScannerApp:
 
     # ==================== Camera Control Methods ====================
 
+    def _enable_v4l2_autofocus(self, camera_source: str):
+        """
+        Try to configure V4L2 focus for macro mode.
+        Some cameras (like Logitech C270) have fixed focus and cannot be adjusted.
+        """
+        import platform
+        import subprocess
+
+        if platform.system() != "Linux":
+            return
+
+        try:
+            # Convert camera_source to /dev/videoX path
+            if camera_source.isdigit():
+                device = f"/dev/video{camera_source}"
+            else:
+                print(
+                    "[DEBUG] Not a USB device (likely IP camera), skipping V4L2 config"
+                )
+                return
+
+            print(f"[DEBUG] Checking focus controls on {device}...")
+
+            try:
+                # List all available controls
+                result = subprocess.run(
+                    ["v4l2-ctl", "-d", device, "--list-ctrls"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+
+                controls_output = result.stdout.lower()
+
+                # Check if any focus controls exist
+                focus_keywords = ["focus", "auto_focus", "af_"]
+                has_focus_control = any(
+                    keyword in controls_output for keyword in focus_keywords
+                )
+
+                if not has_focus_control:
+                    print(
+                        f"[DEBUG] ✓ Camera has fixed focus (no adjustable focus controls)"
+                    )
+                    print(f"[DEBUG] Position camera ~10cm from barcode for best focus")
+                    return
+
+                print(
+                    "[DEBUG] Found focus controls, attempting to enable macro mode..."
+                )
+
+                # Try different focus control names
+                focus_commands = [
+                    ("focus_absolute", "10"),
+                    ("focus_distance", "0"),
+                    ("focus_mode", "0"),
+                ]
+
+                for control_name, value in focus_commands:
+                    if control_name.lower() in controls_output:
+                        try:
+                            ret = subprocess.run(
+                                [
+                                    "v4l2-ctl",
+                                    "-d",
+                                    device,
+                                    "-c",
+                                    f"{control_name}={value}",
+                                ],
+                                capture_output=True,
+                                timeout=2,
+                            )
+                            if ret.returncode == 0:
+                                print(
+                                    f"[DEBUG] ✓ Set {control_name}={value} (macro mode)"
+                                )
+                                return
+                        except Exception:
+                            pass
+
+            except FileNotFoundError:
+                print("[DEBUG] v4l2-ctl not found. Install: sudo apt install v4l-utils")
+            except subprocess.TimeoutExpired:
+                pass
+            except Exception as e:
+                print(f"[DEBUG] Error checking focus controls: {e}")
+
+        except Exception as e:
+            print(f"[DEBUG] V4L2 focus configuration failed: {e}")
+
     def _reset_camera(self):
         """Reset/reconnect the camera connection."""
         self._safe_status("[...] Resetting camera...", "orange")
@@ -1348,10 +1593,13 @@ class VoucherScannerApp:
 
             # Set camera properties again
             try:
-                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, RES_PHONE_WIDTH)
-                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, RES_PHONE_HEIGHT)
+                actual_w, actual_h = set_optimal_resolution(self.cap)
+                self.actual_width = actual_w
+                self.actual_height = actual_h
                 self.cap.set(cv2.CAP_PROP_FPS, 20)
                 self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+                # Re-enable V4L2 autofocus on reconnect
+                self._enable_v4l2_autofocus(self.camera_source)
             except Exception as e:
                 print(f"Warning: Could not set camera properties: {e}")
 
@@ -3089,7 +3337,7 @@ class VoucherScannerApp:
 
 
 def main():
-    global IP_phone, PORT, LAPTOP_CAM, CAMERA_SOURCE, SCANNING_FLAG
+    global IP_phone, PORT, CAMERA_MODE, CAMERA_SOURCE, SCANNING_FLAG
 
     # Show setup window
     setup_root = tk.Tk()
@@ -3103,14 +3351,20 @@ def main():
     # Extract configuration from setup
     IP_phone = setup_window.result["ip"]
     PORT = setup_window.result["port"]
-    LAPTOP_CAM = setup_window.result["use_laptop_cam"]
-    SCANNING_FLAG = LAPTOP_CAM
+    CAMERA_MODE = setup_window.result["camera_mode"]
 
-    # Set camera source
-    if LAPTOP_CAM:
+    # Set camera source and scanning flag based on camera mode
+    if CAMERA_MODE == "laptop":
         CAMERA_SOURCE = "0"
-    else:
+        SCANNING_FLAG = False  # Picture mode
+    elif CAMERA_MODE == "usb":
+        # For USB cameras, try to find the best device
+        best_usb_index = find_best_camera_device(2)  # Start checking from /dev/video2
+        CAMERA_SOURCE = str(best_usb_index)
+        SCANNING_FLAG = False  # USB always uses picture mode
+    else:  # CAMERA_MODE == "ip"
         CAMERA_SOURCE = f"http://{IP_phone}:{PORT}/video"
+        SCANNING_FLAG = False  # Picture mode
 
     # Create main app
     root = tk.Tk()
