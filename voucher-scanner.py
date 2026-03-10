@@ -84,15 +84,16 @@ QR_DECODER_ENABLED = True
 
 # Resolution preferences in order of preference (try highest first, fall back to lower)
 SUPPORTED_RESOLUTIONS = [
+    (2560, 1440),  # Phone via scrcpy (primary)
     (1920, 1080),  # Full HD
-    (1280, 720),  # HD (most USB cameras support this)
-    (1024, 768),  # XGA (fallback for older USB cameras)
-    (800, 600),  # SVGA (last resort)
-    (640, 480),  # VGA (minimum acceptable)
+    (1280, 720),  # HD
+    (1024, 768),  # XGA
+    (800, 600),  # SVGA
+    (640, 480),  # VGA
 ]
 
-RES_PHONE_WIDTH = 1920
-RES_PHONE_HEIGHT = 1080
+RES_PHONE_WIDTH = 2560
+RES_PHONE_HEIGHT = 1440
 
 
 def create_capture(source: str) -> cv2.VideoCapture:
@@ -102,133 +103,6 @@ def create_capture(source: str) -> cv2.VideoCapture:
         return cv2.VideoCapture(idx)
     except ValueError:
         return cv2.VideoCapture(source)
-
-
-def find_best_camera_device(base_index: int = 0) -> int:
-    """
-    On Linux, try to find the best camera device among /dev/video* entries.
-    Tests resolution capabilities to find the one with highest quality.
-    Returns the index of the best camera device.
-    """
-    import platform
-    import time
-
-    if platform.system() != "Linux":
-        return base_index
-
-    best_index = base_index
-    best_resolution = (0, 0)
-
-    # Try indices around the base (e.g., if base_index is 2, try 2, 3, 4, 5, 6)
-    for idx in range(base_index, base_index + 8):
-        try:
-            test_cap = cv2.VideoCapture(idx)
-            if not test_cap.isOpened():
-                continue
-
-            # Give camera time to initialize
-            time.sleep(0.5)
-
-            # Try multiple resolutions to find capability
-            # Start with highest and work down
-            test_resolutions = [(1920, 1080), (1280, 720), (1024, 768), (800, 600)]
-
-            for test_w, test_h in test_resolutions:
-                test_cap.set(cv2.CAP_PROP_FRAME_WIDTH, test_w)
-                test_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, test_h)
-                time.sleep(0.2)
-
-                # Try to read a frame
-                ret, frame = test_cap.read()
-                if ret:
-                    h, w = frame.shape[:2]
-                    print(
-                        f"[DEBUG] Camera {idx} (/dev/video{idx}) - requested {test_w}x{test_h}, got {w}x{h}"
-                    )
-
-                    # If we got a high resolution, prefer this camera
-                    if w * h > best_resolution[0] * best_resolution[1]:
-                        best_resolution = (w, h)
-                        best_index = idx
-
-                    # If we got Full HD or higher, stop testing other resolutions
-                    if w >= 1280 or h >= 720:
-                        break
-
-            test_cap.release()
-
-            # If we found a good camera (at least HD), don't test further
-            if best_resolution[0] >= 1280:
-                break
-
-        except Exception as e:
-            pass
-
-    if best_resolution != (0, 0):
-        print(
-            f"[DEBUG] Selected camera index {best_index} with resolution {best_resolution[0]}x{best_resolution[1]}"
-        )
-    else:
-        print(f"[DEBUG] No suitable camera found, using default index {base_index}")
-
-    return best_index
-
-
-def set_optimal_resolution(cap: cv2.VideoCapture) -> tuple:
-    """
-    Set the camera to best supported resolution.
-    For Logitech C270: tries 1280x960, 1280x720, 1024x768, 800x600, 640x480
-    Returns (width, height) tuple of the actual resolution achieved.
-    """
-    import time
-
-    # Allow camera to initialize
-    print("[DEBUG] Initializing camera...")
-    time.sleep(1)
-
-    # Read a few frames to warm up
-    for _ in range(3):
-        cap.read()
-
-    # Try to set good resolutions (Logitech C270 supports 1280x960)
-    resolutions_to_try = [
-        (1280, 960),  # Logitech C270 native
-        (1280, 720),  # HD
-        (1024, 768),  # XGA
-        (800, 600),  # SVGA
-        (640, 480),  # VGA default
-    ]
-
-    for width, height in resolutions_to_try:
-        print(f"[DEBUG] Trying to set resolution {width}x{height}...")
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-
-        time.sleep(0.3)
-
-        # Read frame and check actual resolution
-        ret, frame = cap.read()
-        if ret:
-            actual_h, actual_w = frame.shape[:2]
-            print(f"[DEBUG] Requested {width}x{height}, got {actual_w}x{actual_h}")
-
-            # If we got it or close to it, accept it
-            if abs(actual_w - width) <= 5 and abs(actual_h - height) <= 5:
-                print(f"[DEBUG] ✓ Resolution set to {actual_w}x{actual_h}")
-                return (actual_w, actual_h)
-
-    # Fallback: use whatever the camera is currently set to
-    ret, frame = cap.read()
-    if ret:
-        actual_h, actual_w = frame.shape[:2]
-        print(f"[DEBUG] Using default resolution: {actual_w}x{actual_h}")
-        return (actual_w, actual_h)
-
-    # Last resort
-    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"[DEBUG] Fallback resolution: {actual_w}x{actual_h}")
-    return (actual_w, actual_h)
 
 
 # ---- Beep on success -----------------------------------------------------
@@ -737,8 +611,14 @@ class VoucherScannerApp:
             sys.exit(1)
 
         # Camera hints
-        # Use smart resolution detection - try to set optimal resolution
-        actual_w, actual_h = set_optimal_resolution(self.cap)
+        # Set fixed resolution for Android phone via scrcpy
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 2560)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1440)
+        actual_w, actual_h = 2560, 1440
+        if not self.cap.isOpened():
+            raise RuntimeError(
+                "Could not open /dev/video2 — is scrcpy running with --v4l2-sink=/dev/video2?"
+            )
 
         # Store the actual resolution for later use
         self.actual_width = actual_w
@@ -1473,7 +1353,7 @@ class VoucherScannerApp:
     def _enable_v4l2_autofocus(self, camera_source: str):
         """
         Try to configure V4L2 focus for macro mode.
-        Some cameras (like Logitech C270) have fixed focus and cannot be adjusted.
+        Some cameras (like USB Cam) have fixed focus and cannot be adjusted.
         """
         import platform
         import subprocess
@@ -1593,7 +1473,9 @@ class VoucherScannerApp:
 
             # Set camera properties again
             try:
-                actual_w, actual_h = set_optimal_resolution(self.cap)
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 2560)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1440)
+                actual_w, actual_h = 2560, 1440
                 self.actual_width = actual_w
                 self.actual_height = actual_h
                 self.cap.set(cv2.CAP_PROP_FPS, 20)
@@ -3358,9 +3240,8 @@ def main():
         CAMERA_SOURCE = "0"
         SCANNING_FLAG = False  # Picture mode
     elif CAMERA_MODE == "usb":
-        # For USB cameras, try to find the best device
-        best_usb_index = find_best_camera_device(2)  # Start checking from /dev/video2
-        CAMERA_SOURCE = str(best_usb_index)
+        # Android phone via scrcpy → /dev/video2 at full resolution
+        CAMERA_SOURCE = "2"
         SCANNING_FLAG = False  # USB always uses picture mode
     else:  # CAMERA_MODE == "ip"
         CAMERA_SOURCE = f"http://{IP_phone}:{PORT}/video"
