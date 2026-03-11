@@ -23,7 +23,8 @@ A Python barcode/QR scanner with automatic gift card detection and browser autom
 | DM | 24 | Auto (super fast) |
 | ALDI | 20 | Manual select |
 | LIDL | 20 | Manual select |
-(| EDEKA | 16 | Auto | deactivated - needs to be uncommented in code)
+
+( EDEKA - deactivated - needs to be uncommented in code)
 
 **ALDI & LIDL same format** → manually select after scan.
 
@@ -98,7 +99,7 @@ It covers installing v4l2loopback, building scrcpy 3.x, phone settings, and the 
 
 ---
 
-## Configure `.env`
+## Configure `.env` (optional)
 
 Create a file called `.env` in the project folder. This stores your settings so you don't have to re-enter them every time:
 
