@@ -23,19 +23,27 @@ cd "$(dirname "$0")"
 source ~/miniconda3/etc/profile.d/conda.sh
 conda activate voucher-scanner
 
-# Start phone camera stream via USB (scrcpy → /dev/video2)
-# Requires phone plugged in via USB with USB Debugging enabled.
-# scrcpy runs in the background; it is killed automatically when the app exits.
-scrcpy --v4l2-sink=/dev/video2 --no-playback --video-source=camera --camera-size=2560x1440 &
-SCRCPY_PID=$!
-
-# Give scrcpy a moment to initialise the video stream
-sleep 3
+# --- Optional: USB phone camera via scrcpy ---
+# Automatically detected: only runs if an Android phone is connected via USB.
+SCRCPY_PID=""
+if adb devices 2>/dev/null | grep -q "device$"; then
+    echo "Android phone detected — starting USB camera stream..."
+    sudo modprobe -r v4l2loopback 2>/dev/null
+    sudo modprobe v4l2loopback devices=1 video_nr=2 card_label="DroidCam" exclusive_caps=1 max_width=2560 max_height=1440
+    scrcpy --v4l2-sink=/dev/video2 --no-playback --video-source=camera --camera-size=2560x1440 &
+    SCRCPY_PID=$!
+    sleep 3
+else
+    echo "No Android phone detected — skipping USB camera setup."
+    echo "Using internal or IP camera mode."
+fi
 
 python voucher-scanner.py
 
-# Stop scrcpy when the app closes
-kill $SCRCPY_PID 2>/dev/null
+# Stop scrcpy if it was started
+if [ -n "$SCRCPY_PID" ]; then
+    kill $SCRCPY_PID 2>/dev/null
+fi
 ```
 
 Make it executable:
@@ -99,12 +107,21 @@ On GNOME, right-click the desktop entry and select **Allow Launching**.
 
 #### Prerequisites for USB phone camera mode
 
-Before the launcher works with the phone camera, the v4l2loopback kernel module must
-be loaded. This happens automatically at boot if you followed the permanent setup in
-`README_USB_from_phone.md`. To load it manually:
+The wrapper script automatically reloads the v4l2loopback module with the correct
+settings on every launch — no manual setup needed before starting.
+
+For this to work without a password prompt, add a sudoers rule:
 
 ```bash
-sudo modprobe v4l2loopback devices=1 video_nr=2 card_label="DroidCam" exclusive_caps=1 max_width=2560 max_height=1440
+sudo visudo -f /etc/sudoers.d/v4l2loopback
 ```
+
+Add this line (replace `<USER>` with your username):
+
+```
+<USER> ALL=(ALL) NOPASSWD: /sbin/modprobe v4l2loopback, /sbin/modprobe -r v4l2loopback
+```
+
+Without this, the terminal will pause and ask for your sudo password each time you launch.
 
 See `README_USB_from_phone.md` for the full installation and troubleshooting guide.

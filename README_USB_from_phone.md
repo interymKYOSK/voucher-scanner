@@ -57,6 +57,40 @@ hash -r
 scrcpy --version  # should show 3.x
 ```
 
+### 4. Allow modprobe without password (required for desktop launcher)
+
+The desktop launcher script reloads v4l2loopback automatically on startup using `sudo modprobe`.
+Without this step, a password prompt will appear every time you launch from the desktop icon.
+
+First check where modprobe is installed:
+
+```bash
+which modprobe
+```
+
+Then create a sudoers rule matching that path (usually `/usr/sbin/modprobe` on Ubuntu 24):
+
+```bash
+sudo bash -c 'echo "madsee ALL=(ALL) NOPASSWD: /usr/sbin/modprobe" > /etc/sudoers.d/v4l2loopback && chmod 440 /etc/sudoers.d/v4l2loopback'
+```
+
+Verify the file is valid:
+
+```bash
+sudo visudo -c
+# Expected output: parsed OK
+```
+
+Test it works without a password:
+
+```bash
+sudo -n modprobe -r v4l2loopback && echo "works without password!"
+```
+
+> **Note:** This grants passwordless access to `modprobe` only — not to all sudo commands.
+> The `-n` flag in the launcher script ensures it fails silently instead of prompting
+> if the rule is ever missing.
+
 ---
 
 ## Phone Setup

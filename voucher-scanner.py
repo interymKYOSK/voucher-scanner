@@ -408,7 +408,7 @@ class SetupWindow:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Voucher Scanner - Setup")
-        self.root.geometry("600x600")
+        self.root.geometry("600x700")
         self.result = None
 
         # Initialize fonts (after Tk window exists)
