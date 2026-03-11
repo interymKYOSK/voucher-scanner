@@ -19,10 +19,10 @@ A Python barcode/QR scanner with automatic gift card detection and browser autom
 
 | Shop | Digits | Method |
 |------|--------|--------|
-| REWE | 13 | Manual (slow Friendly Captcha) |
-| DM | 24 | Auto (super fast) |
-| ALDI | 20 | Manual select |
-| LIDL | 20 | Manual select |
+| REWE | 13 | Manual browser (slow Friendly Captcha) |
+| DM | 24 | Auto browser (super fast) |
+| ALDI | 20 | Auto browser + manual Captcha |
+| LIDL | 20 | Manual browser (slow Friendly Captcha) |
 
 ( EDEKA - deactivated - needs to be uncommented in code)
 
